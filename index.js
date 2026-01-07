@@ -31,7 +31,7 @@ const SYSTEM_PROMPT = `
 `;
 
 /* ===============================
-   Helper: แยกข้อความยาว
+   Helper: แยกข้อความยาว (ปลอดภัย LINE)
 ================================ */
 function splitMessage(text, maxLength = 900) {
   const chunks = [];
@@ -42,11 +42,11 @@ function splitMessage(text, maxLength = 900) {
     start += maxLength;
   }
 
-  return chunks.map(t => ({ type: 'text', text: t }));
+  return chunks.map(t => ({ type: 'text', text: t.trim() }));
 }
 
 /* ===============================
-   Helper: ดึงราคาหุ้นจาก Finnhub
+   Finnhub: ราคาหุ้น
 ================================ */
 async function getStockPrice(symbol) {
   const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
@@ -55,7 +55,7 @@ async function getStockPrice(symbol) {
 }
 
 /* ===============================
-   Helper: เรียก ChatGPT
+   OpenAI (คุม token)
 ================================ */
 async function askOpenAI(prompt) {
   const res = await axios.post(
@@ -87,15 +87,14 @@ app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
     if (!event || event.type !== 'message') {
-      return res.sendStatus(200);
+      return res.sendStatus(500);
     }
 
     const userMessage = event.message.text.trim();
     const upperMsg = userMessage.toUpperCase();
-
     let replyText = '';
 
-    /* ===== CASE 1: ราคา ===== */
+    /* ===== CASE: ถามราคา ===== */
     const priceMatch = upperMsg.match(/^([A-Z]{1,6})\s*(ราคา|PRICE)/);
 
     if (priceMatch) {
@@ -116,12 +115,12 @@ app.post('/webhook', async (req, res) => {
 • ปิดก่อนหน้า: ${price.pc}
 
 🧠 มุมมอง Signal Zeeker:
-ราคาสะท้อนความคาดหวังระยะสั้น
+ราคาคือผลลัพธ์ระยะสั้น
 แต่ทิศทางจริงดูที่ “เงินไหล”
 
 สรุป:
-ราคาเป็นแค่ผลลัพธ์
-เกมจริงคือพฤติกรรมของทุน
+อย่าดูราคาเดี่ยว ๆ
+ต้องดูพฤติกรรมทุนประกอบ
 `;
         }
       } catch {
@@ -129,7 +128,7 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    /* ===== CASE 2: วิเคราะห์ทั่วไป ===== */
+    /* ===== CASE: วิเคราะห์ทั่วไป ===== */
     else {
       try {
         replyText = await askOpenAI(userMessage);
@@ -138,14 +137,19 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    /* ===== ส่งกลับ LINE (หลาย message) ===== */
-    const messages = splitMessage(replyText);
+    /* ===============================
+       ส่งข้อความแบบไม่ขาด (Reply + Push)
+    ================================ */
+    const allMessages = splitMessage(replyText);
+    const replyMessages = allMessages.slice(0, 5);
+    const pushMessages = allMessages.slice(5);
 
+    // 🔹 Reply (สูงสุด 5)
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       {
         replyToken: event.replyToken,
-        messages
+        messages: replyMessages
       },
       {
         headers: {
@@ -155,7 +159,24 @@ app.post('/webhook', async (req, res) => {
       }
     );
 
-    res.sendStatus(200);
+    // 🔹 Push ต่อถ้ามีเกิน
+    if (pushMessages.length > 0) {
+      await axios.post(
+        'https://api.line.me/v2/bot/message/push',
+        {
+          to: event.source.userId,
+          messages: pushMessages
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${LINE_TOKEN}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+    }
+
+    res.sendStatus(500);
   } catch (err) {
     console.error('ERROR:', err.response?.data || err.message);
     res.sendStatus(500);
