@@ -37,7 +37,7 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    const userMessage = event.message.text.slice(0, 500); // กันข้อความยาว
+    const userMessage = event.message.text.slice(0, 1000); // กันข้อความยาว
 
     // === เรียก OpenAI ===
     const aiResponse = await axios.post(
