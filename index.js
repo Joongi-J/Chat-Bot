@@ -6,233 +6,173 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+const LINE_TOKEN = process.env.LINE_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* ===============================
-   CONFIG
-================================ */
-const OPENAI_MODEL = 'gpt-4o-mini';
-const MAX_TOKENS = 500;
-const TEMPERATURE = 0.6;
-
-/* ===============================
-   SYSTEM PROMPT
+   System Prompt (Signal Zeeker)
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI ผู้ช่วยของเพจ Signal Zeeker
 
 สไตล์:
-- วิเคราะห์ตลาดการเงิน หุ้น การลงทุน
+- วิเคราะห์ตลาดการเงิน หุ้น การลงทุน มุมมองมหภาค
 - เห็นภาพ "เงินไหล" และ "เกมอำนาจ"
-- ใช้ Elliott Wave + Price Action เชิงโครงสร้าง
-- ไม่ฟันธง ไม่ชี้นำซื้อขาย
+- เขียนกระชับ ไม่วิชาการเกิน
+- ไม่ชี้นำซื้อขายตรง ๆ
 - ถ้าไม่มั่นใจ ให้บอกตรง ๆ
-- ปิดท้ายด้วย summary สั้น
+- ปิดท้ายด้วย "สรุปสั้นแบบนักวิเคราะห์"
 
 ห้าม:
 - เดา
-- ให้จุดซื้อขายตายตัว
-- ตอบนอกเรื่องการเงิน
+- ให้คำแนะนำซื้อขายตรง
+- ตอบเรื่องนอกการเงิน
 `;
 
 /* ===============================
-   HELPERS
+   Helper: Split LINE message
 ================================ */
+function splitMessage(text, maxLength = 4000) {
+  const chunks = [];
+  let current = '';
 
-// ตรวจ intent แบบง่าย
-function isPriceOnlyQuestion(text) {
-  return /ราคา|price|เท่าไหร่|ตอนนี้/i.test(text) && text.length < 20;
-}
-
-// ดึงราคา realtime
-async function getQuote(symbol) {
-  const res = await axios.get(
-    `https://finnhub.io/api/v1/quote`,
-    {
-      params: {
-        symbol,
-        token: process.env.FINNHUB_API_KEY
-      }
+  text.split('\n').forEach(line => {
+    if ((current + line + '\n').length > maxLength) {
+      chunks.push(current);
+      current = '';
     }
-  );
-  return res.data;
-}
+    current += line + '\n';
+  });
 
-// ดึง OHLC
-async function getCandles(symbol) {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - 60 * 60 * 24 * 120; // 120 วัน
-
-  const res = await axios.get(
-    `https://finnhub.io/api/v1/stock/candle`,
-    {
-      params: {
-        symbol,
-        resolution: 'D',
-        from,
-        to,
-        token: process.env.FINNHUB_API_KEY
-      }
-    }
-  );
-  return res.data;
-}
-
-// วิเคราะห์โครงสร้างราคาแบบ rule-based
-function analyzeStructure(candles) {
-  const highs = candles.h.slice(-20);
-  const lows = candles.l.slice(-20);
-
-  const recentHigh = Math.max(...highs);
-  const recentLow = Math.min(...lows);
-
-  const lastClose = candles.c[candles.c.length - 1];
-
-  const trend =
-    lastClose > candles.c[candles.c.length - 10]
-      ? 'Higher High / Higher Low'
-      : 'Sideway / Corrective';
-
-  return {
-    trend,
-    recentHigh,
-    recentLow,
-    lastClose,
-    volatility: 'สูง',
-    timeframe: 'Daily'
-  };
-}
-
-// ส่งข้อความหลาย bubble
-async function replyLine(replyToken, texts) {
-  const messages = texts.map(t => ({ type: 'text', text: t }));
-
-  await axios.post(
-    'https://api.line.me/v2/bot/message/reply',
-    { replyToken, messages },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.LINE_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    }
-  );
+  if (current.trim()) chunks.push(current);
+  return chunks.slice(0, 5); // LINE ส่งได้สูงสุด 5
 }
 
 /* ===============================
-   LINE WEBHOOK
+   Helper: Detect price intent
+================================ */
+function extractTicker(text) {
+  const match = text.match(/\b[A-Z]{2,5}\b/);
+  return match ? match[0] : null;
+}
+
+/* ===============================
+   Helper: Get price from Finnhub
+================================ */
+async function getStockPrice(symbol) {
+  try {
+    const res = await axios.get(
+      `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`
+    );
+
+    if (!res.data || res.data.c === 0) return null;
+
+    return {
+      price: res.data.c,
+      change: res.data.d,
+      percent: res.data.dp
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+/* ===============================
+   LINE Webhook
 ================================ */
 app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
-    if (!event || event.type !== 'message') {
+    if (!event || event.type !== 'message' || event.message.type !== 'text') {
       return res.sendStatus(200);
     }
 
-    const userText = event.message.text.trim();
-    const symbolMatch = userText.match(/[A-Z]{2,5}/);
-    const symbol = symbolMatch ? symbolMatch[0] : null;
+    const userText = event.message.text.slice(0, 500);
+    let finalPrompt = userText;
 
-    if (!symbol) {
-      await replyLine(event.replyToken, [
-        'กรุณาระบุสัญลักษณ์หุ้น เช่น TSLA, AAPL'
-      ]);
-      return res.sendStatus(200);
-    }
+    /* === ถามราคาหุ้น → ดึงข้อมูลจริง === */
+    const ticker = extractTicker(userText);
+    if (ticker && FINNHUB_API_KEY) {
+      const priceData = await getStockPrice(ticker);
+      if (priceData) {
+        finalPrompt = `
+ราคาปัจจุบันของ ${ticker}:
+- ราคา: ${priceData.price}
+- เปลี่ยนแปลง: ${priceData.change} (${priceData.percent}%)
 
-    /* ====== ราคาอย่างเดียว ====== */
-    if (isPriceOnlyQuestion(userText)) {
-      const quote = await getQuote(symbol);
-
-      await replyLine(event.replyToken, [
-        `📊 ${symbol} ราคาปัจจุบัน`,
-        `• Last: $${quote.c}
-• High: $${quote.h}
-• Low: $${quote.l}
-• Prev Close: $${quote.pc}`
-      ]);
-
-      return res.sendStatus(200);
-    }
-
-    /* ====== วิเคราะห์เชิงลึก ====== */
-    const candles = await getCandles(symbol);
-    if (candles.s !== 'ok') {
-      throw new Error('ไม่สามารถดึงข้อมูลราคาได้');
-    }
-
-    const structure = analyzeStructure(candles);
-
-    const prompt = `
-ข้อมูลตลาด ${symbol}:
-
-โครงสร้างราคา:
-- Trend: ${structure.trend}
-- High ล่าสุด: ${structure.recentHigh}
-- Low ล่าสุด: ${structure.recentLow}
-- Last Close: ${structure.lastClose}
-- Volatility: ${structure.volatility}
-- Timeframe: ${structure.timeframe}
-
-โจทย์:
-1) ประเมิน Elliott Wave ว่าอยู่ในเฟสใด (เชิงโครงสร้าง)
-2) ระบุแนวรับ-แนวต้านจาก price action
-3) วาง 2 scenario (bullish / corrective)
-4) เขียนสไตล์ Signal Zeeker
-5) ปิดท้ายด้วย summary สั้น
+ช่วยวิเคราะห์สถานการณ์หุ้น ${ticker}
+โดยเชื่อมโยงกับมุมมองเงินไหลและภาพตลาด
 `;
+      }
+    }
 
+    /* === เรียก OpenAI === */
     let aiText = '';
-
     try {
       const aiRes = await axios.post(
         'https://api.openai.com/v1/chat/completions',
         {
-          model: OPENAI_MODEL,
+          model: 'gpt-4o-mini',
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: prompt }
+            { role: 'user', content: finalPrompt }
           ],
-          max_tokens: MAX_TOKENS,
-          temperature: TEMPERATURE
+          max_tokens: 350,
+          temperature: 0.6
         },
         {
           headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           }
         }
       );
 
-      aiText = aiRes.data.choices[0].message.content;
+      aiText = aiRes.data.choices?.[0]?.message?.content;
     } catch (err) {
+      console.error('OpenAI Error:', err.response?.data || err.message);
       aiText = `
-⚠️ ระบบวิเคราะห์อัตโนมัติขัดข้องชั่วคราว
-
-โครงสร้างราคา ${symbol}:
-- Trend: ${structure.trend}
-- Range: ${structure.recentLow} – ${structure.recentHigh}
+ตอนนี้ระบบ AI มีปัญหาชั่วคราว
+แต่ข้อมูลตลาดยังต้องจับตาอย่างใกล้ชิด
 
 สรุป:
-ตลาดยังอยู่ในโหมด "รอเลือกทาง"
-จับตา reaction ที่แนวรับ-แนวต้านสำคัญ
+ความผันผวนยังสูง อย่าด่วนตัดสินใจ
 `;
     }
 
-    // แยกข้อความเป็นหลายส่วน
-    const chunks = aiText.match(/[\s\S]{1,900}/g);
+    if (!aiText) aiText = 'ระบบไม่สามารถประมวลผลได้ในขณะนี้';
 
-    await replyLine(event.replyToken, chunks.slice(0, 3));
+    /* === แบ่งข้อความก่อนส่ง LINE === */
+    const messages = splitMessage(aiText).map(t => ({
+      type: 'text',
+      text: t
+    }));
+
+    await axios.post(
+      'https://api.line.me/v2/bot/message/reply',
+      {
+        replyToken: event.replyToken,
+        messages
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${LINE_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('ERROR:', err.message);
+    console.error('Webhook Error:', err.message);
     res.sendStatus(500);
   }
 });
 
 /* ===============================
-   START SERVER
+   Start Server
 ================================ */
 app.listen(PORT, () => {
-  console.log(`Signal Zeeker AI Bot running on port ${PORT}`);
+  console.log(`🚀 Signal Zeeker AI Bot running on port ${PORT}`);
 });
