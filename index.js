@@ -15,34 +15,44 @@ const LINE_TOKEN = process.env.LINE_TOKEN;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* ===============================
-   Signal Zeeker System Prompt
+   SYSTEM PROMPT (กันข้อความขาด)
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI ผู้ช่วยของเพจ Signal Zeeker
 
-แนวทาง:
-- วิเคราะห์ตลาด หุ้น การลงทุน
-- เห็นภาพ "เงินไหล" และ "เกมอำนาจ"
-- กระชับ อ่านง่าย ไม่วิชาการ
-- ห้ามชี้นำซื้อขายตรง
-- ถ้าไม่มีข้อมูลจริง ให้บอกตรง ๆ
+กติกาสำคัญ:
+- ตอบเป็นหัวข้อเสมอ
+- ห้ามตัดประโยคกลางทาง
+- ถ้าข้อความยาว ให้แบ่งเป็นย่อหน้าสั้น ๆ
+- ถ้าเป็นหุ้น ให้มี:
+  1) ภาพรวม
+  2) เงินไหล / ความเสี่ยง
+  3) สรุปท้าย
 
-ปิดท้ายด้วยสรุปสั้นแบบนักวิเคราะห์
+สไตล์:
+- กระชับ เห็นภาพ
+- ไม่ชี้นำซื้อขาย
 `;
 
 /* ===============================
-   Helper: แยกข้อความยาว (ปลอดภัย LINE)
+   Helper: แยกข้อความ (ปลอดภัย LINE)
 ================================ */
 function splitMessage(text, maxLength = 900) {
   const chunks = [];
-  let start = 0;
+  let buffer = '';
 
-  while (start < text.length) {
-    chunks.push(text.substring(start, start + maxLength));
-    start += maxLength;
-  }
+  text.split('\n').forEach(line => {
+    if ((buffer + line).length > maxLength) {
+      chunks.push(buffer.trim());
+      buffer = line + '\n';
+    } else {
+      buffer += line + '\n';
+    }
+  });
 
-  return chunks.map(t => ({ type: 'text', text: t.trim() }));
+  if (buffer.trim()) chunks.push(buffer.trim());
+
+  return chunks.map(t => ({ type: 'text', text: t }));
 }
 
 /* ===============================
@@ -55,7 +65,7 @@ async function getStockPrice(symbol) {
 }
 
 /* ===============================
-   OpenAI (คุม token)
+   OpenAI
 ================================ */
 async function askOpenAI(prompt) {
   const res = await axios.post(
@@ -66,7 +76,7 @@ async function askOpenAI(prompt) {
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 350,
+      max_tokens: 500,
       temperature: 0.6
     },
     {
@@ -86,27 +96,20 @@ async function askOpenAI(prompt) {
 app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
-    if (!event || event.type !== 'message') {
-      return res.sendStatus(500);
-    }
+    if (!event || event.type !== 'message') return res.sendStatus(200);
 
     const userMessage = event.message.text.trim();
-    const upperMsg = userMessage.toUpperCase();
+    const upper = userMessage.toUpperCase();
     let replyText = '';
 
-    /* ===== CASE: ถามราคา ===== */
-    const priceMatch = upperMsg.match(/^([A-Z]{1,6})\s*(ราคา|PRICE)/);
+    // 👉 ถ้าพิมพ์ชื่อหุ้นอย่างเดียว เช่น TSLA
+    const onlySymbol = upper.match(/^[A-Z]{1,6}$/);
 
-    if (priceMatch) {
-      const symbol = priceMatch[1];
+    if (onlySymbol) {
+      const symbol = onlySymbol[0];
+      const price = await getStockPrice(symbol);
 
-      try {
-        const price = await getStockPrice(symbol);
-
-        if (!price || price.c === 0) {
-          replyText = `ไม่พบข้อมูลราคาปัจจุบันของ ${symbol}`;
-        } else {
-          replyText = `
+      replyText = `
 📊 ${symbol} — ราคาปัจจุบัน
 
 • ราคา: ${price.c} USD
@@ -114,78 +117,53 @@ app.post('/webhook', async (req, res) => {
 • ต่ำสุดวันนี้: ${price.l}
 • ปิดก่อนหน้า: ${price.pc}
 
-🧠 มุมมอง Signal Zeeker:
-ราคาคือผลลัพธ์ระยะสั้น
-แต่ทิศทางจริงดูที่ “เงินไหล”
+🧠 วิเคราะห์ Signal Zeeker
+หุ้นอยู่ในกลุ่มที่ตลาดให้น้ำหนักสูง
+ความผันผวนสะท้อน “เงินร้อน + ความคาดหวัง”
+
+⚠️ ความเสี่ยง
+ราคาแกว่งแรงตามข่าว / Sentiment
+ไม่เหมาะกับคนรับแรงเหวี่ยงไม่ได้
 
 สรุป:
-อย่าดูราคาเดี่ยว ๆ
-ต้องดูพฤติกรรมทุนประกอบ
+${symbol} คือหุ้นเกมใหญ่
+แต่ต้องดูจังหวะ ไม่ใช่อารมณ์
 `;
-        }
-      } catch {
-        replyText = 'ระบบดึงราคาหุ้นขัดข้องชั่วคราว';
-      }
     }
 
-    /* ===== CASE: วิเคราะห์ทั่วไป ===== */
+    // 👉 กรณีอื่น ใช้ AI
     else {
-      try {
-        replyText = await askOpenAI(userMessage);
-      } catch {
-        replyText = 'ระบบ AI ขัดข้องชั่วคราว';
-      }
+      replyText = await askOpenAI(userMessage);
     }
 
     /* ===============================
-       ส่งข้อความแบบไม่ขาด (Reply + Push)
+       ส่งแบบไม่ขาด (Reply + Push)
     ================================ */
-    const allMessages = splitMessage(replyText);
-    const replyMessages = allMessages.slice(0, 5);
-    const pushMessages = allMessages.slice(5);
+    const all = splitMessage(replyText);
+    const reply = all.slice(0, 5);
+    const push = all.slice(5);
 
-    // 🔹 Reply (สูงสุด 5)
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
-      {
-        replyToken: event.replyToken,
-        messages: replyMessages
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${LINE_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
+      { replyToken: event.replyToken, messages: reply },
+      { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
     );
 
-    // 🔹 Push ต่อถ้ามีเกิน
-    if (pushMessages.length > 0) {
+    if (push.length > 0) {
       await axios.post(
         'https://api.line.me/v2/bot/message/push',
-        {
-          to: event.source.userId,
-          messages: pushMessages
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${LINE_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        }
+        { to: event.source.userId, messages: push },
+        { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
       );
     }
 
-    res.sendStatus(500);
+    res.sendStatus(200);
   } catch (err) {
-    console.error('ERROR:', err.response?.data || err.message);
+    console.error(err.response?.data || err.message);
     res.sendStatus(500);
   }
 });
 
-/* ===============================
-   Start Server
-================================ */
-app.listen(PORT, () => {
-  console.log(`🚀 Signal Zeeker AI Bot running on port ${PORT}`);
-});
+app.listen(PORT, () =>
+  console.log(`🚀 Signal Zeeker AI Bot running on port ${PORT}`)
+);
