@@ -6,76 +6,63 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const LINE_TOKEN = process.env.LINE_TOKEN;
+
+/* ===============================
+   CONFIG
+================================ */
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const LINE_TOKEN = process.env.LINE_TOKEN;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* ===============================
-   System Prompt (Signal Zeeker)
+   Signal Zeeker System Prompt
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI ผู้ช่วยของเพจ Signal Zeeker
 
-สไตล์:
-- วิเคราะห์ตลาดการเงิน หุ้น การลงทุน มุมมองมหภาค
+แนวทาง:
+- วิเคราะห์ตลาด หุ้น การลงทุน
 - เห็นภาพ "เงินไหล" และ "เกมอำนาจ"
-- เขียนกระชับ ไม่วิชาการเกิน
-- ไม่ชี้นำซื้อขายตรง ๆ
-- ถ้าไม่มั่นใจ ให้บอกตรง ๆ
-- ปิดท้ายด้วย "สรุปสั้นแบบนักวิเคราะห์"
+- กระชับ อ่านง่าย ไม่วิชาการ
+- ห้ามชี้นำซื้อขายตรง
+- ถ้าไม่มีข้อมูลจริง ให้บอกตรง ๆ
 
-ห้าม:
-- เดา
-- ให้คำแนะนำซื้อขายตรง
-- ตอบเรื่องนอกการเงิน
+ปิดท้ายด้วยสรุปสั้นแบบนักวิเคราะห์
 `;
 
 /* ===============================
-   Helper: Split LINE message
-================================ */
-function splitMessage(text, maxLength = 4000) {
-  const chunks = [];
-  let current = '';
-
-  text.split('\n').forEach(line => {
-    if ((current + line + '\n').length > maxLength) {
-      chunks.push(current);
-      current = '';
-    }
-    current += line + '\n';
-  });
-
-  if (current.trim()) chunks.push(current);
-  return chunks.slice(0, 5); // LINE ส่งได้สูงสุด 5
-}
-
-/* ===============================
-   Helper: Detect price intent
-================================ */
-function extractTicker(text) {
-  const match = text.match(/\b[A-Z]{2,5}\b/);
-  return match ? match[0] : null;
-}
-
-/* ===============================
-   Helper: Get price from Finnhub
+   Helper: ดึงราคาหุ้นจาก Finnhub
 ================================ */
 async function getStockPrice(symbol) {
-  try {
-    const res = await axios.get(
-      `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`
-    );
+  const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
+  const res = await axios.get(url);
+  return res.data;
+}
 
-    if (!res.data || res.data.c === 0) return null;
+/* ===============================
+   Helper: เรียก ChatGPT (คุม token)
+================================ */
+async function askOpenAI(prompt) {
+  const res = await axios.post(
+    'https://api.openai.com/v1/chat/completions',
+    {
+      model: 'gpt-3.5-turbo', // ใช้ตัวเล็ก ประหยัดเงิน
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 250,
+      temperature: 0.6
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
 
-    return {
-      price: res.data.c,
-      change: res.data.d,
-      percent: res.data.dp
-    };
-  } catch (err) {
-    return null;
-  }
+  return res.data.choices[0].message.content;
 }
 
 /* ===============================
@@ -84,76 +71,67 @@ async function getStockPrice(symbol) {
 app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
-    if (!event || event.type !== 'message' || event.message.type !== 'text') {
+    if (!event || event.type !== 'message') {
       return res.sendStatus(200);
     }
 
-    const userText = event.message.text.slice(0, 500);
-    let finalPrompt = userText;
+    const userMessage = event.message.text.trim();
+    const upperMsg = userMessage.toUpperCase();
 
-    /* === ถามราคาหุ้น → ดึงข้อมูลจริง === */
-    const ticker = extractTicker(userText);
-    if (ticker && FINNHUB_API_KEY) {
-      const priceData = await getStockPrice(ticker);
-      if (priceData) {
-        finalPrompt = `
-ราคาปัจจุบันของ ${ticker}:
-- ราคา: ${priceData.price}
-- เปลี่ยนแปลง: ${priceData.change} (${priceData.percent}%)
+    let replyText = '';
 
-ช่วยวิเคราะห์สถานการณ์หุ้น ${ticker}
-โดยเชื่อมโยงกับมุมมองเงินไหลและภาพตลาด
+    /* ===============================
+       CASE 1: ถาม "ราคา" หุ้น
+    ================================ */
+    const priceMatch = upperMsg.match(/^([A-Z]{1,6})\s*(ราคา|PRICE)/);
+
+    if (priceMatch) {
+      const symbol = priceMatch[1];
+
+      try {
+        const price = await getStockPrice(symbol);
+
+        if (!price || price.c === 0) {
+          replyText = `ไม่พบข้อมูลราคาปัจจุบันของ ${symbol}`;
+        } else {
+          replyText = `
+📊 ${symbol} — ราคาปัจจุบัน
+
+• ราคา: ${price.c} USD
+• สูงสุดวันนี้: ${price.h}
+• ต่ำสุดวันนี้: ${price.l}
+• ปิดก่อนหน้า: ${price.pc}
+
+🧠 มุมมอง Signal Zeeker:
+หุ้นยังอยู่ในเกมของเงินทุน ความผันผวนสะท้อนความคาดหวังตลาด
+
+สรุป: ดูราคาอย่างเดียวไม่พอ ต้องดู “เงินไหล” ประกอบ
 `;
+        }
+      } catch (err) {
+        replyText = 'ระบบดึงราคาหุ้นขัดข้องชั่วคราว';
       }
     }
 
-    /* === เรียก OpenAI === */
-    let aiText = '';
-    try {
-      const aiRes = await axios.post(
-        'https://api.openai.com/v1/chat/completions',
-        {
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: finalPrompt }
-          ],
-          max_tokens: 350,
-          temperature: 0.6
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${OPENAI_API_KEY}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      aiText = aiRes.data.choices?.[0]?.message?.content;
-    } catch (err) {
-      console.error('OpenAI Error:', err.response?.data || err.message);
-      aiText = `
-ตอนนี้ระบบ AI มีปัญหาชั่วคราว
-แต่ข้อมูลตลาดยังต้องจับตาอย่างใกล้ชิด
-
-สรุป:
-ความผันผวนยังสูง อย่าด่วนตัดสินใจ
-`;
+    /* ===============================
+       CASE 2: วิเคราะห์ทั่วไป → ใช้ AI
+    ================================ */
+    else {
+      try {
+        replyText = await askOpenAI(userMessage);
+      } catch (err) {
+        replyText = 'ระบบ AI ขัดข้องชั่วคราว กรุณาลองใหม่';
+      }
     }
 
-    if (!aiText) aiText = 'ระบบไม่สามารถประมวลผลได้ในขณะนี้';
-
-    /* === แบ่งข้อความก่อนส่ง LINE === */
-    const messages = splitMessage(aiText).map(t => ({
-      type: 'text',
-      text: t
-    }));
-
+    /* ===============================
+       ส่งข้อความกลับ LINE
+    ================================ */
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       {
         replyToken: event.replyToken,
-        messages
+        messages: [{ type: 'text', text: replyText }]
       },
       {
         headers: {
@@ -165,7 +143,7 @@ app.post('/webhook', async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('Webhook Error:', err.message);
+    console.error('ERROR:', err.message);
     res.sendStatus(500);
   }
 });
