@@ -66,7 +66,7 @@ async function askOpenAI(prompt) {
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 500,
+      max_tokens: 5000,
       temperature: 0.6
     },
     {
@@ -87,7 +87,7 @@ app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
     if (!event || event.type !== 'message') {
-      return res.sendStatus(200);
+      return res.sendStatus(5000);
     }
 
     const userMessage = event.message.text.trim().toUpperCase();
@@ -148,7 +148,7 @@ app.post('/webhook', async (req, res) => {
       }
     );
 
-    res.sendStatus(200);
+    res.sendStatus(5000);
   } catch (err) {
     console.error('ERROR:', err.response?.data || err.message);
     res.sendStatus(500);
