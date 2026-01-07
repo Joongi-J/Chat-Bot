@@ -28,25 +28,41 @@ const SYSTEM_PROMPT = `
 `;
 
 /* ===============================
-   LINE Webhook
+   Finnhub – Get Stock Price
 ================================ */
-app.post('/webhook', async (req, res) => {
+async function getStockPrice(symbol) {
   try {
-    const event = req.body.events?.[0];
-    if (!event || event.type !== 'message') {
-      return res.sendStatus(200);
-    }
+    const res = await axios.get(
+      `https://finnhub.io/api/v1/quote`,
+      {
+        params: {
+          symbol,
+          token: process.env.FINNHUB_API_KEY
+        }
+      }
+    );
 
-    const userMessage = event.message.text.slice(0, 1000); // กันข้อความยาว
+    if (!res.data || !res.data.c) return null;
+    return res.data;
+  } catch (err) {
+    console.error('Finnhub Error:', err.response?.data || err.message);
+    return null;
+  }
+}
 
-    // === เรียก OpenAI ===
-    const aiResponse = await axios.post(
+/* ===============================
+   OpenAI – Chat Completion
+   (คุม token + fallback)
+================================ */
+async function callOpenAI(prompt) {
+  try {
+    const res = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o-mini', // ประหยัด + เร็ว
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userMessage }
+          { role: 'user', content: prompt }
         ],
         max_tokens: 300,
         temperature: 0.6
@@ -59,16 +75,77 @@ app.post('/webhook', async (req, res) => {
       }
     );
 
-    const replyText =
-      aiResponse.data.choices?.[0]?.message?.content ||
-      'ขออภัย ระบบยังประมวลผลไม่ได้ตอนนี้';
+    return res.data.choices[0].message.content;
+  } catch (err) {
+    console.error('OpenAI Error:', err.response?.data || err.message);
+    return null;
+  }
+}
 
-    // === ส่งกลับ LINE ===
+/* ===============================
+   LINE Webhook
+================================ */
+app.post('/webhook', async (req, res) => {
+  try {
+    const event = req.body.events?.[0];
+    if (!event || event.type !== 'message') {
+      return res.sendStatus(200);
+    }
+
+    const userText = event.message.text.trim().slice(0, 500);
+
+    let finalPrompt = userText;
+    let aiReply = null;
+
+    /* ===============================
+       ตรวจคำสั่ง "หุ้น ราคา"
+       เช่น: NVDA ราคา
+    ================================ */
+    const priceMatch = userText.match(/([A-Z]{2,6})\s*ราคา/i);
+
+    if (priceMatch) {
+      const symbol = priceMatch[1].toUpperCase();
+      const priceData = await getStockPrice(symbol);
+
+      if (!priceData) {
+        aiReply = `❌ ไม่สามารถดึงราคาหุ้น ${symbol} ได้ในขณะนี้`;
+      } else {
+        finalPrompt = `
+หุ้น ${symbol}
+
+ราคา ณ ปัจจุบัน: ${priceData.c} USD
+สูงสุดวันนี้: ${priceData.h}
+ต่ำสุดวันนี้: ${priceData.l}
+ราคาปิดก่อนหน้า: ${priceData.pc}
+
+ช่วยวิเคราะห์มุมมองตลาดจากข้อมูลนี้
+ในสไตล์ Signal Zeeker
+`;
+      }
+    }
+
+    /* ===============================
+       เรียก OpenAI (ถ้ายังไม่มีคำตอบ)
+    ================================ */
+    if (!aiReply) {
+      aiReply = await callOpenAI(finalPrompt);
+    }
+
+    /* ===============================
+       Fallback ถ้า AI ล่ม
+    ================================ */
+    if (!aiReply) {
+      aiReply = '⚠️ ระบบวิเคราะห์ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง';
+    }
+
+    /* ===============================
+       ส่งกลับ LINE
+    ================================ */
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       {
         replyToken: event.replyToken,
-        messages: [{ type: 'text', text: replyText }]
+        messages: [{ type: 'text', text: aiReply }]
       },
       {
         headers: {
@@ -80,7 +157,7 @@ app.post('/webhook', async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('ERROR:', err.response?.data || err.message);
+    console.error('Webhook Error:', err.response?.data || err.message);
     res.sendStatus(500);
   }
 });
@@ -89,5 +166,5 @@ app.post('/webhook', async (req, res) => {
    Start Server
 ================================ */
 app.listen(PORT, () => {
-  console.log(`Signal Zeeker AI Bot running on port ${PORT}`);
+  console.log(`🚀 Signal Zeeker AI Bot running on port ${PORT}`);
 });
