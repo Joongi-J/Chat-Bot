@@ -8,78 +8,61 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 /* ===============================
+   CONFIG
+================================ */
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const LINE_TOKEN = process.env.LINE_TOKEN;
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
+
+/* ===============================
    Signal Zeeker System Prompt
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI ผู้ช่วยของเพจ Signal Zeeker
 
-สไตล์:
-- วิเคราะห์ตลาดการเงิน หุ้น การลงทุน มุมมองมหภาค
+แนวทาง:
+- วิเคราะห์ตลาด หุ้น การลงทุน
 - เห็นภาพ "เงินไหล" และ "เกมอำนาจ"
-- เขียนกระชับ ไม่วิชาการเกิน
-- ไม่ชี้นำซื้อขายตรง ๆ
-- ถ้าไม่มั่นใจ ให้บอกตรง ๆ
-- ปิดท้ายด้วยสรุปสั้นแบบนักวิเคราะห์
+- กระชับ อ่านง่าย ไม่วิชาการ
+- ห้ามชี้นำซื้อขายตรง
+- ถ้าไม่มีข้อมูลจริง ให้บอกตรง ๆ
 
-ห้าม:
-- เดา
-- ให้คำแนะนำการลงทุนเฉพาะเจาะจง
-- ตอบเรื่องนอกการเงิน
+ปิดท้ายด้วยสรุปสั้นแบบนักวิเคราะห์
 `;
 
 /* ===============================
-   Finnhub – Get Stock Price
+   Helper: ดึงราคาหุ้นจาก Finnhub
 ================================ */
 async function getStockPrice(symbol) {
-  try {
-    const res = await axios.get(
-      `https://finnhub.io/api/v1/quote`,
-      {
-        params: {
-          symbol,
-          token: process.env.FINNHUB_API_KEY
-        }
-      }
-    );
-
-    if (!res.data || !res.data.c) return null;
-    return res.data;
-  } catch (err) {
-    console.error('Finnhub Error:', err.response?.data || err.message);
-    return null;
-  }
+  const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
+  const res = await axios.get(url);
+  return res.data;
 }
 
 /* ===============================
-   OpenAI – Chat Completion
-   (คุม token + fallback)
+   Helper: เรียก ChatGPT (คุม token)
 ================================ */
-async function callOpenAI(prompt) {
-  try {
-    const res = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini', // ประหยัด + เร็ว
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: prompt }
-        ],
-        max_tokens: 300,
-        temperature: 0.6
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
+async function askOpenAI(prompt) {
+  const res = await axios.post(
+    'https://api.openai.com/v1/chat/completions',
+    {
+      model: 'gpt-3.5-turbo', // ใช้ตัวเล็ก ประหยัดเงิน
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 10000,
+      temperature: 0.6
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
       }
-    );
+    }
+  );
 
-    return res.data.choices[0].message.content;
-  } catch (err) {
-    console.error('OpenAI Error:', err.response?.data || err.message);
-    return null;
-  }
+  return res.data.choices[0].message.content;
 }
 
 /* ===============================
@@ -92,64 +75,67 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    const userText = event.message.text.trim().slice(0, 500);
+    const userMessage = event.message.text.trim();
+    const upperMsg = userMessage.toUpperCase();
 
-    let finalPrompt = userText;
-    let aiReply = null;
+    let replyText = '';
 
     /* ===============================
-       ตรวจคำสั่ง "หุ้น ราคา"
-       เช่น: NVDA ราคา
+       CASE 1: ถาม "ราคา" หุ้น
     ================================ */
-    const priceMatch = userText.match(/([A-Z]{2,6})\s*ราคา/i);
+    const priceMatch = upperMsg.match(/^([A-Z]{1,6})\s*(ราคา|PRICE)/);
 
     if (priceMatch) {
-      const symbol = priceMatch[1].toUpperCase();
-      const priceData = await getStockPrice(symbol);
+      const symbol = priceMatch[1];
 
-      if (!priceData) {
-        aiReply = `❌ ไม่สามารถดึงราคาหุ้น ${symbol} ได้ในขณะนี้`;
-      } else {
-        finalPrompt = `
-หุ้น ${symbol}
+      try {
+        const price = await getStockPrice(symbol);
 
-ราคา ณ ปัจจุบัน: ${priceData.c} USD
-สูงสุดวันนี้: ${priceData.h}
-ต่ำสุดวันนี้: ${priceData.l}
-ราคาปิดก่อนหน้า: ${priceData.pc}
+        if (!price || price.c === 0) {
+          replyText = `ไม่พบข้อมูลราคาปัจจุบันของ ${symbol}`;
+        } else {
+          replyText = `
+📊 ${symbol} — ราคาปัจจุบัน
 
-ช่วยวิเคราะห์มุมมองตลาดจากข้อมูลนี้
-ในสไตล์ Signal Zeeker
+• ราคา: ${price.c} USD
+• สูงสุดวันนี้: ${price.h}
+• ต่ำสุดวันนี้: ${price.l}
+• ปิดก่อนหน้า: ${price.pc}
+
+🧠 มุมมอง Signal Zeeker:
+หุ้นยังอยู่ในเกมของเงินทุน ความผันผวนสะท้อนความคาดหวังตลาด
+
+สรุป: ดูราคาอย่างเดียวไม่พอ ต้องดู “เงินไหล” ประกอบ
 `;
+        }
+      } catch (err) {
+        replyText = 'ระบบดึงราคาหุ้นขัดข้องชั่วคราว';
       }
     }
 
     /* ===============================
-       เรียก OpenAI (ถ้ายังไม่มีคำตอบ)
+       CASE 2: วิเคราะห์ทั่วไป → ใช้ AI
     ================================ */
-    if (!aiReply) {
-      aiReply = await callOpenAI(finalPrompt);
+    else {
+      try {
+        replyText = await askOpenAI(userMessage);
+      } catch (err) {
+        replyText = 'ระบบ AI ขัดข้องชั่วคราว กรุณาลองใหม่';
+      }
     }
 
     /* ===============================
-       Fallback ถ้า AI ล่ม
-    ================================ */
-    if (!aiReply) {
-      aiReply = '⚠️ ระบบวิเคราะห์ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง';
-    }
-
-    /* ===============================
-       ส่งกลับ LINE
+       ส่งข้อความกลับ LINE
     ================================ */
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       {
         replyToken: event.replyToken,
-        messages: [{ type: 'text', text: aiReply }]
+        messages: [{ type: 'text', text: replyText }]
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.LINE_TOKEN}`,
+          Authorization: `Bearer ${LINE_TOKEN}`,
           'Content-Type': 'application/json'
         }
       }
@@ -157,7 +143,7 @@ app.post('/webhook', async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('Webhook Error:', err.response?.data || err.message);
+    console.error('ERROR:', err.message);
     res.sendStatus(500);
   }
 });
