@@ -31,6 +31,21 @@ const SYSTEM_PROMPT = `
 `;
 
 /* ===============================
+   Helper: แยกข้อความยาว
+================================ */
+function splitMessage(text, maxLength = 900) {
+  const chunks = [];
+  let start = 0;
+
+  while (start < text.length) {
+    chunks.push(text.substring(start, start + maxLength));
+    start += maxLength;
+  }
+
+  return chunks.map(t => ({ type: 'text', text: t }));
+}
+
+/* ===============================
    Helper: ดึงราคาหุ้นจาก Finnhub
 ================================ */
 async function getStockPrice(symbol) {
@@ -40,18 +55,18 @@ async function getStockPrice(symbol) {
 }
 
 /* ===============================
-   Helper: เรียก ChatGPT (คุม token)
+   Helper: เรียก ChatGPT
 ================================ */
 async function askOpenAI(prompt) {
   const res = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
-      model: 'gpt-3.5-turbo', // ใช้ตัวเล็ก ประหยัดเงิน
+      model: 'gpt-3.5-turbo',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 250,
+      max_tokens: 350,
       temperature: 0.6
     },
     {
@@ -80,9 +95,7 @@ app.post('/webhook', async (req, res) => {
 
     let replyText = '';
 
-    /* ===============================
-       CASE 1: ถาม "ราคา" หุ้น
-    ================================ */
+    /* ===== CASE 1: ราคา ===== */
     const priceMatch = upperMsg.match(/^([A-Z]{1,6})\s*(ราคา|PRICE)/);
 
     if (priceMatch) {
@@ -103,35 +116,36 @@ app.post('/webhook', async (req, res) => {
 • ปิดก่อนหน้า: ${price.pc}
 
 🧠 มุมมอง Signal Zeeker:
-หุ้นยังอยู่ในเกมของเงินทุน ความผันผวนสะท้อนความคาดหวังตลาด
+ราคาสะท้อนความคาดหวังระยะสั้น
+แต่ทิศทางจริงดูที่ “เงินไหล”
 
-สรุป: ดูราคาอย่างเดียวไม่พอ ต้องดู “เงินไหล” ประกอบ
+สรุป:
+ราคาเป็นแค่ผลลัพธ์
+เกมจริงคือพฤติกรรมของทุน
 `;
         }
-      } catch (err) {
+      } catch {
         replyText = 'ระบบดึงราคาหุ้นขัดข้องชั่วคราว';
       }
     }
 
-    /* ===============================
-       CASE 2: วิเคราะห์ทั่วไป → ใช้ AI
-    ================================ */
+    /* ===== CASE 2: วิเคราะห์ทั่วไป ===== */
     else {
       try {
         replyText = await askOpenAI(userMessage);
-      } catch (err) {
-        replyText = 'ระบบ AI ขัดข้องชั่วคราว กรุณาลองใหม่';
+      } catch {
+        replyText = 'ระบบ AI ขัดข้องชั่วคราว';
       }
     }
 
-    /* ===============================
-       ส่งข้อความกลับ LINE
-    ================================ */
+    /* ===== ส่งกลับ LINE (หลาย message) ===== */
+    const messages = splitMessage(replyText);
+
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       {
         replyToken: event.replyToken,
-        messages: [{ type: 'text', text: replyText }]
+        messages
       },
       {
         headers: {
@@ -143,7 +157,7 @@ app.post('/webhook', async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('ERROR:', err.message);
+    console.error('ERROR:', err.response?.data || err.message);
     res.sendStatus(500);
   }
 });
