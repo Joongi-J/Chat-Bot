@@ -39,7 +39,7 @@ const SYSTEM_PROMPT = `
 /* ===============================
    Helper: ผ่าข้อความแบบกันหาย
 ================================ */
-function splitForLine(text, maxLen = 900) {
+function splitForLine(text, maxLen = 5000) {
   const messages = [];
 
   // แยกตามย่อหน้าใหญ่ก่อน
@@ -67,7 +67,7 @@ function splitForLine(text, maxLen = 900) {
   }
 
   // LINE แนะนำไม่เกิน 5–10 กล่อง
-  return messages.slice(0, 8);
+  return messages.slice(0, 5);
 }
 
 /* ===============================
