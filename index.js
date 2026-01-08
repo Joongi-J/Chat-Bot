@@ -43,30 +43,37 @@ const SYSTEM_PROMPT = `
    LINE SAFE SPLIT (ไม่ตัด ไม่หาย)
 ================================ */
 function buildLineMessages(sections) {
-  return sections.map(text => ({
-    type: 'text',
-    text: text.trim().slice(0, 950)
-  })).slice(0, 8);
+  return sections
+    .map(text => ({
+      type: 'text',
+      text: text.trim().slice(0, 950)
+    }))
+    .slice(0, 8);
 }
 
 /* ===============================
    Finnhub: Candle
 ================================ */
 async function getCandles(symbol, resolution = 'D', days = 120) {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - days * 86400;
+  try {
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - days * 86400;
+    const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
+    const res = await axios.get(url);
 
-  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
-  const res = await axios.get(url);
-
-  if (res.data.s !== 'ok') throw new Error('No candle data');
-  return res.data;
+    if (res.data.s !== 'ok') throw new Error('No candle data');
+    return res.data;
+  } catch (err) {
+    console.error('Finnhub ERROR:', err.response?.data || err.message);
+    throw err;
+  }
 }
 
 /* ===============================
    Indicator Calculations
 ================================ */
 function EMA(values, period) {
+  if (values.length < period) period = values.length;
   const k = 2 / (period + 1);
   let ema = values[0];
   for (let i = 1; i < values.length; i++) {
@@ -76,6 +83,7 @@ function EMA(values, period) {
 }
 
 function RSI(values, period = 14) {
+  if (values.length < period) period = values.length - 1;
   let gains = 0, losses = 0;
   for (let i = values.length - period; i < values.length - 1; i++) {
     const diff = values[i + 1] - values[i];
@@ -156,28 +164,33 @@ RSI ล่าสุดอยู่ที่ ${rsi} สะท้อนโมเ�
     } 
     /* ===== คำถามทั่วไป ===== */
     else {
-      const ai = await axios.post(
-        'https://api.openai.com/v1/chat/completions',
-        {
-          model: 'gpt-3.5-turbo',
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: userText }
-          ],
-          max_tokens: 900,
-          temperature: 0.6
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${OPENAI_API_KEY}`,
-            'Content-Type': 'application/json'
+      try {
+        const ai = await axios.post(
+          'https://api.openai.com/v1/chat/completions',
+          {
+            model: 'gpt-3.5-turbo',
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: userText }
+            ],
+            max_tokens: 900,
+            temperature: 0.6
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${OPENAI_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
           }
-        }
-      );
+        );
 
-      sections = ai.data.choices[0].message.content
-        .split(/\n(?=📊|📈|📐|📉|🧠|📌)/)
-        .filter(Boolean);
+        sections = ai.data.choices[0].message.content
+          .split(/\n(?=📊|📈|📐|📉|🧠|📌)/)
+          .filter(Boolean);
+      } catch (err) {
+        console.error('OpenAI ERROR:', err.response?.data || err.message);
+        sections = ['📌 เกิดข้อผิดพลาดในการประมวลผลคำถาม AI กรุณาลองใหม่'];
+      }
     }
 
     await axios.post(
@@ -196,7 +209,7 @@ RSI ล่าสุดอยู่ที่ ${rsi} สะท้อนโมเ�
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('ERROR:', err.message);
+    console.error('SERVER ERROR:', err.response?.data || err.message);
     res.sendStatus(500);
   }
 });
