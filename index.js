@@ -1,26 +1,24 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const { buildStockFlex } = require('./flexBuilder');
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-
-/* ===============================
-   CONFIG
-================================ */
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const LINE_TOKEN = process.env.LINE_TOKEN;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
-/* ===============================
-   SYSTEM PROMPT
-================================ */
+// Memory เก็บ context ของผู้ใช้
+const userContext = new Map();
+
+// System Prompt
 const SYSTEM_PROMPT = `
 คุณคือ AI นักวิเคราะห์ตลาดของเพจ Signal Zeeker
 คุณเป็นผู้ชาย ใช้คำว่า "ผม" และลงท้ายทุกข้อความด้วย "ครับ"
-ตอบแบบ dynamic ไม่ fix เน้นให้เหมือนคนฉลาดจริง ๆ
+ตอบแบบ dynamic ไม่ fix
 ถ้าไม่มีข้อมูลจริงให้บอกตรง ๆ
 โครงสร้างคำตอบ:
 📊 ภาพรวม
@@ -30,15 +28,13 @@ const SYSTEM_PROMPT = `
 📌 สรุปเชิงวิเคราะห์
 `;
 
-/* ===============================
-   HELPER: แยกข้อความ LINE-safe
-================================ */
+// Helper: LINE-safe
 function splitForLine(text, maxLen = 900) {
   const messages = [];
   const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
 
   for (const p of paragraphs) {
-    if (messages.length >= 5) break; // LINE API limit 5 messages
+    if (messages.length >= 5) break; // LINE API limit
     if (p.length <= maxLen) {
       messages.push({ type: 'text', text: p });
     } else {
@@ -49,13 +45,10 @@ function splitForLine(text, maxLen = 900) {
       }
     }
   }
-
   return messages;
 }
 
-/* ===============================
-   Finnhub: ราคาหุ้น
-================================ */
+// Finnhub: ดึงราคา
 async function getStockPrice(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
@@ -67,9 +60,7 @@ async function getStockPrice(symbol) {
   }
 }
 
-/* ===============================
-   OpenAI: dynamic response
-================================ */
+// OpenAI: วิเคราะห์ dynamic
 async function askOpenAI(prompt) {
   try {
     const res = await axios.post(
@@ -83,14 +74,8 @@ async function askOpenAI(prompt) {
         max_tokens: 1200,
         temperature: 0.7
       },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
+      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
     );
-
     return res.data.choices[0].message.content;
   } catch (err) {
     console.error('OpenAI ERROR:', err.response?.data || err.message);
@@ -98,53 +83,58 @@ async function askOpenAI(prompt) {
   }
 }
 
-/* ===============================
-   LINE WEBHOOK
-================================ */
+// LINE Webhook
 app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
     if (!event || event.type !== 'message') return res.sendStatus(200);
 
-    const userText = event.message.text.trim();
+    let userText = event.message.text.trim();
+    const userId = event.source.userId;
     const symbolOnly = /^[A-Za-z]{1,6}$/.test(userText);
 
-    let replyText = '';
-
+    // Flex response
     if (symbolOnly) {
       const symbol = userText.toUpperCase();
       const price = await getStockPrice(symbol);
 
-      if (price) {
-        const prompt = `
-วิเคราะห์หุ้น ${symbol} แบบละเอียดเหมือนบทวิเคราะห์จริง ๆ
-ใช้ราคาต่อไปนี้เป็นข้อมูล: 
-ราคาปิดล่าสุด: ${price.c}, สูงสุดวันนี้: ${price.h}, ต่ำสุดวันนี้: ${price.l}, ราคาปิดก่อนหน้า: ${price.pc}
-ตอบครบทุกหัวข้อ: 📊 ภาพรวม, 🧠 ปัจจัยสำคัญ, ⚠️ ความเสี่ยง, 📈 มุมมองตลาด, 📌 สรุป
-ใช้คำว่า "ผม" และลงท้าย "ครับ"
-`;
-
-        replyText = await askOpenAI(prompt);
-      } else {
-        replyText = `📌 ผมไม่สามารถดึงข้อมูลหุ้น ${symbol} ได้ครับ โปรดตรวจสอบ symbol หรือ API Key ของ Finnhub ครับ`;
+      if (!price) {
+        const messages = [{ type: 'text', text: `📌 ผมไม่สามารถดึงข้อมูลหุ้น ${symbol} ได้ครับ` }];
+        await axios.post('https://api.line.me/v2/bot/message/reply', {
+          replyToken: event.replyToken,
+          messages
+        }, { headers: { Authorization: `Bearer ${LINE_TOKEN}`, 'Content-Type': 'application/json' } });
+        return res.sendStatus(200);
       }
+
+      // Update context
+      userContext.set(userId, symbol);
+
+      const support = (price.c * 0.97).toFixed(2); // ตัวอย่างแนวรับ 3% ต่ำกว่า
+      const resistance = (price.c * 1.03).toFixed(2); // ตัวอย่างแนวต้าน 3% สูงกว่า
+
+      const flexMessage = buildStockFlex(symbol, price.c.toFixed(2), support, resistance);
+
+      await axios.post('https://api.line.me/v2/bot/message/reply', {
+        replyToken: event.replyToken,
+        messages: [flexMessage]
+      }, { headers: { Authorization: `Bearer ${LINE_TOKEN}`, 'Content-Type': 'application/json' } });
+
     } else {
-      // คำถามทั่วไป → dynamic
-      replyText = await askOpenAI(userText);
-    }
-
-    const messages = splitForLine(replyText);
-
-    await axios.post(
-      'https://api.line.me/v2/bot/message/reply',
-      { replyToken: event.replyToken, messages },
-      {
-        headers: {
-          Authorization: `Bearer ${LINE_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
+      // ถ้า user เคยถามหุ้น → เติม context
+      if (userContext.has(userId)) {
+        const lastSymbol = userContext.get(userId);
+        userText = `เกี่ยวกับหุ้น ${lastSymbol}: ${userText}`;
       }
-    );
+
+      const replyText = await askOpenAI(userText);
+      const messages = splitForLine(replyText);
+
+      await axios.post('https://api.line.me/v2/bot/message/reply', {
+        replyToken: event.replyToken,
+        messages
+      }, { headers: { Authorization: `Bearer ${LINE_TOKEN}`, 'Content-Type': 'application/json' } });
+    }
 
     res.sendStatus(200);
   } catch (err) {
@@ -153,9 +143,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-/* ===============================
-   START SERVER
-================================ */
+// Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Signal Zeeker AI Bot (dynamic, ผู้ชาย) running on port ${PORT}`);
+  console.log(`🚀 Signal Zeeker AI Bot (Flex + Context + dynamic) running on port ${PORT}`);
 });
