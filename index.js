@@ -20,104 +20,85 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const SYSTEM_PROMPT = `
 คุณคือ AI นักวิเคราะห์ตลาดของเพจ Signal Zeeker
 
-กติกาสำคัญ (ต้องทำตาม):
-- เขียนเหมือนบทวิเคราะห์สำนักข่าว
-- แยกเป็นหัวข้อชัดเจน (ใช้ emoji นำ)
-- 1 หัวข้อ = 1 ย่อหน้า (ไม่เกิน 600 ตัวอักษรต่อย่อหน้า)
-- ห้ามใช้ bullet ยาว
-- ห้ามชี้นำซื้อขายตรง
-- Elliott Wave ให้ใช้คำว่า "โครงสร้าง", "คลื่นที่เป็นไปได้"
-- แนวรับแนวต้านให้เรียกว่า "โซน"
-- ถ้าเป็นการประเมิน ให้ระบุว่าเป็นมุมมองเชิงเทคนิค
-
-โครงสร้างคำตอบ (ต้องมีทุกข้อ):
-📊 ภาพรวมราคา
-📈 Elliott Wave & โครงสร้าง
-📐 แนวรับแนวต้าน
-📉 Indicator (RSI / EMA / VWAP)
-🧠 มุมมองตลาด
-📌 สรุป Signal Zeeker
+กติกาการตอบ:
+- แยกเป็นย่อหน้าใหญ่ตามหัวข้อ
+- ต้องตอบครบทุกข้อ: 📊 ภาพรวม, 🧠 ปัจจัยสำคัญ, ⚠️ ความเสี่ยง, 📈 มุมมองตลาด, 📌 สรุปเชิงวิเคราะห์
+- ใช้อีโมจิเหมาะสมกับหัวข้อ
+- เขียนยาว อธิบายชัด ลึก เหมือนบทวิเคราะห์ข่าว
+- ถ้าไม่มีข้อมูลจริงให้ระบุตรง ๆ
+- ห้ามตัดคำกลางประโยค
 `;
 
 /* ===============================
-   LINE MESSAGE SPLIT
+   Helper: ผ่าข้อความ LINE-safe
 ================================ */
-function buildLineMessages(sections) {
-  return sections
-    .map(text => ({
-      type: 'text',
-      text: text.trim().slice(0, 950)
-    }))
-    .slice(0, 8);
+function splitForLine(text, maxLen = 900) {
+  const messages = [];
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map(p => p.trim())
+    .filter(Boolean);
+
+  for (const p of paragraphs) {
+    if (p.length <= maxLen) {
+      messages.push({ type: 'text', text: p });
+    } else {
+      let start = 0;
+      while (start < p.length) {
+        messages.push({
+          type: 'text',
+          text: p.substring(start, start + maxLen)
+        });
+        start += maxLen;
+      }
+    }
+  }
+  return messages.slice(0, 8);
 }
 
 /* ===============================
-   Finnhub: Candle Safe
+   Finnhub: ราคาหุ้น
 ================================ */
-async function getCandles(symbol, resolution = 'D', days = 120) {
+async function getStockPrice(symbol) {
   try {
-    const to = Math.floor(Date.now() / 1000);
-    const from = to - days * 86400;
-    const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
+    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
     const res = await axios.get(url);
-
-    if (res.data.s !== 'ok') {
-      throw new Error(`Finnhub: No candle data for ${symbol}`);
-    }
     return res.data;
   } catch (err) {
     console.error('Finnhub ERROR:', err.response?.data || err.message);
-    throw new Error('Finnhub access error. โปรดตรวจสอบ symbol หรือ API Key');
+    return null;
   }
 }
 
 /* ===============================
-   Indicator Calculations
+   OpenAI
 ================================ */
-function EMA(values, period) {
-  if (!values || values.length === 0) return 0;
-  period = Math.min(period, values.length);
-  const k = 2 / (period + 1);
-  let ema = values[0];
-  for (let i = 1; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
-  }
-  return ema;
-}
+async function askOpenAI(prompt) {
+  try {
+    const res = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 1000,
+        temperature: 0.6
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
-function RSI(values, period = 14) {
-  if (!values || values.length <= 1) return 0;
-  period = Math.min(period, values.length - 1);
-  let gains = 0, losses = 0;
-  for (let i = values.length - period; i < values.length - 1; i++) {
-    const diff = values[i + 1] - values[i];
-    diff >= 0 ? gains += diff : losses -= diff;
+    return res.data.choices[0].message.content;
+  } catch (err) {
+    console.error('OpenAI ERROR:', err.response?.data || err.message);
+    return '📌 เกิดข้อผิดพลาดในการประมวลผล AI กรุณาลองใหม่';
   }
-  const rs = gains / (losses || 1);
-  return (100 - 100 / (1 + rs)).toFixed(2);
-}
-
-function VWAP(candles) {
-  if (!candles || !candles.c || !candles.v) return 0;
-  let pv = 0, vol = 0;
-  for (let i = 0; i < candles.c.length; i++) {
-    pv += candles.c[i] * candles.v[i];
-    vol += candles.v[i];
-  }
-  return (vol === 0 ? 0 : (pv / vol).toFixed(2));
-}
-
-/* ===============================
-   SR + Structure
-================================ */
-function analyzeStructure(candles) {
-  if (!candles || !candles.h || !candles.l) return { resistance: 0, support: 0 };
-  const highs = candles.h.slice(-30);
-  const lows = candles.l.slice(-30);
-  return {
-    resistance: Math.max(...highs).toFixed(2),
-    support: Math.min(...lows).toFixed(2)
-  };
 }
 
 /* ===============================
@@ -129,74 +110,56 @@ app.post('/webhook', async (req, res) => {
     if (!event || event.type !== 'message') return res.sendStatus(200);
 
     const userText = event.message.text.trim();
-    const isSymbolOnly = /^[A-Za-z]{1,6}$/.test(userText);
+    const symbolOnly = /^[A-Za-z]{1,6}$/.test(userText);
 
-    let sections = [];
+    let replyText = '';
 
-    if (isSymbolOnly) {
+    /* ===== Symbol หุ้น ===== */
+    if (symbolOnly) {
       const symbol = userText.toUpperCase();
-      try {
-        const daily = await getCandles(symbol, 'D', 180);
-        const intraday = await getCandles(symbol, '60', 10);
+      const price = await getStockPrice(symbol);
 
-        const close = daily.c[daily.c.length - 1];
-        const ema50 = EMA(daily.c.slice(-60), 50).toFixed(2);
-        const ema200 = EMA(daily.c.slice(-220), 200).toFixed(2);
-        const rsi = RSI(daily.c);
-        const vwap = VWAP(intraday);
-        const sr = analyzeStructure(daily);
+      if (price) {
+        replyText = `
+📊 ภาพรวมราคา ${symbol}  
+ราคาปัจจุบันอยู่ที่ ${price.c} ดอลลาร์สหรัฐ 
+ราคาสูงสุดวันนี้คือ ${price.h} ดอลลาร์
+ต่ำสุด ${price.l} ดอลลาร์ 
+ราคาปิดก่อนหน้าอยู่ที่ ${price.pc} ดอลลาร์ 
 
-        sections = [
-          `📊 ${symbol} ภาพรวมราคา  
-ราคาปัจจุบันเคลื่อนไหวบริเวณ ${close} ดอลลาร์ โดยโครงสร้างระยะกลางยังอยู่ในช่วงการสะสมแรงหลังการเคลื่อนไหวรอบก่อนหน้า`,
 
-          `📈 Elliott Wave & โครงสร้าง  
-รูปแบบราคาใน Timeframe หลักมีลักษณะของโครงสร้างปรับฐานมากกว่าคลื่นส่ง โดยการไม่ทำ Higher High ต่อเนื่อง`,
+🧠 ปัจจัยสำคัญ  
+ราคาหุ้น ${symbol} ถูกขับเคลื่อนจากปัจจัยหลายด้านทั้งผลประกอบการ ความคาดหวังของนักลงทุนต่อรายได้ในอนาคต อัตราดอกเบี้ย และแนวโน้มเศรษฐกิจมหภาค โดยเฉพาะกระแสเงินทุนระหว่างสถาบันและนักลงทุนรายย่อยที่มีอิทธิพลต่อความผันผวน
 
-          `📐 แนวรับแนวต้าน  
-โซนแนวต้าน ${sr.resistance} ดอลลาร์ / โซนแนวรับ ${sr.support} ดอลลาร์`,
+⚠️ ความเสี่ยง  
+หุ้น ${symbol} มีความอ่อนไหวต่อข่าวสารและข้อมูลเศรษฐกิจ รวมถึงนโยบายภาครัฐ การเปลี่ยนแปลงในอุตสาหกรรมและ Sentiment ของตลาด ซึ่งอาจทำให้เกิดการแกว่งตัวอย่างรุนแรงในระยะสั้น
 
-          `📉 Indicator  
-RSI ล่าสุด ${rsi} | EMA50 ${ema50} | EMA200 ${ema200} | VWAP short-term ${vwap}`,
+📈 มุมมองตลาด  
+ภาพรวมตลาดสะท้อนว่าผู้เล่นรายใหญ่ยังคงรอปัจจัยใหม่เพื่อกำหนดทิศทาง ราคาหุ้นในช่วงนี้อาจเคลื่อนไหวในกรอบแคบ การติดตามแรงซื้อขายและปริมาณการเทรดเป็นสิ่งสำคัญเพื่อเข้าใจทิศทางต่อไป
 
-          `🧠 มุมมองตลาด  
-ราคาสะท้อนช่วงรอปัจจัยใหม่ ผู้เล่นใหญ่ยังไม่เปิดไพ่`,
-
-          `📌 สรุป Signal Zeeker  
-การเคลื่อนไหวใกล้โซนสำคัญจะบอกเกมถัดไปของตลาด`
-        ];
-      } catch (err) {
-        sections = [`📌 Finnhub error: ไม่สามารถดึงข้อมูล ${symbol} ได้ โปรดตรวจสอบ symbol หรือ API Key`];
+📌 สรุปเชิงวิเคราะห์  
+ราคาปัจจุบันเป็นเพียงผลลัพธ์ ส่วนสิ่งที่ต้องจับตาคือโครงสร้างการเคลื่อนไหวของเงินทุนและพฤติกรรมของผู้เล่นรายใหญ่ การเคลื่อนไหวใกล้โซนสำคัญจะเป็นตัวบอกเกมถัดไปของตลาด
+`;
+      } else {
+        replyText = `📌 ไม่สามารถดึงข้อมูลหุ้น ${symbol} ได้ โปรดตรวจสอบ symbol หรือ API Key ของ Finnhub`;
       }
-    } else {
-      try {
-        const ai = await axios.post(
-          'https://api.openai.com/v1/chat/completions',
-          {
-            model: 'gpt-3.5-turbo',
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: userText }
-            ],
-            max_tokens: 900,
-            temperature: 0.6
-          },
-          { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
-        );
-
-        sections = ai.data.choices[0].message.content
-          .split(/\n(?=📊|📈|📐|📉|🧠|📌)/)
-          .filter(Boolean);
-      } catch (err) {
-        console.error('OpenAI ERROR:', err.response?.data || err.message);
-        sections = ['📌 เกิดข้อผิดพลาดในการประมวลผล AI กรุณาลองใหม่'];
-      }
+    } 
+    /* ===== คำถามทั่วไป ===== */
+    else {
+      replyText = await askOpenAI(userText);
     }
+
+    const messages = splitForLine(replyText);
 
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
-      { replyToken: event.replyToken, messages: buildLineMessages(sections) },
-      { headers: { Authorization: `Bearer ${LINE_TOKEN}`, 'Content-Type': 'application/json' } }
+      { replyToken: event.replyToken, messages },
+      {
+        headers: {
+          Authorization: `Bearer ${LINE_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
     );
 
     res.sendStatus(200);
