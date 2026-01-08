@@ -15,7 +15,7 @@ const LINE_TOKEN = process.env.LINE_TOKEN;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* ===============================
-   SYSTEM PROMPT (ออกแบบเพื่อ LINE)
+   SYSTEM PROMPT
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI นักวิเคราะห์ตลาดของเพจ Signal Zeeker
@@ -40,7 +40,7 @@ const SYSTEM_PROMPT = `
 `;
 
 /* ===============================
-   LINE SAFE SPLIT (ไม่ตัด ไม่หาย)
+   LINE MESSAGE SPLIT
 ================================ */
 function buildLineMessages(sections) {
   return sections
@@ -52,7 +52,7 @@ function buildLineMessages(sections) {
 }
 
 /* ===============================
-   Finnhub: Candle
+   Finnhub: Candle Safe
 ================================ */
 async function getCandles(symbol, resolution = 'D', days = 120) {
   try {
@@ -61,11 +61,13 @@ async function getCandles(symbol, resolution = 'D', days = 120) {
     const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
     const res = await axios.get(url);
 
-    if (res.data.s !== 'ok') throw new Error('No candle data');
+    if (res.data.s !== 'ok') {
+      throw new Error(`Finnhub: No candle data for ${symbol}`);
+    }
     return res.data;
   } catch (err) {
     console.error('Finnhub ERROR:', err.response?.data || err.message);
-    throw err;
+    throw new Error('Finnhub access error. โปรดตรวจสอบ symbol หรือ API Key');
   }
 }
 
@@ -73,7 +75,8 @@ async function getCandles(symbol, resolution = 'D', days = 120) {
    Indicator Calculations
 ================================ */
 function EMA(values, period) {
-  if (values.length < period) period = values.length;
+  if (!values || values.length === 0) return 0;
+  period = Math.min(period, values.length);
   const k = 2 / (period + 1);
   let ema = values[0];
   for (let i = 1; i < values.length; i++) {
@@ -83,7 +86,8 @@ function EMA(values, period) {
 }
 
 function RSI(values, period = 14) {
-  if (values.length < period) period = values.length - 1;
+  if (!values || values.length <= 1) return 0;
+  period = Math.min(period, values.length - 1);
   let gains = 0, losses = 0;
   for (let i = values.length - period; i < values.length - 1; i++) {
     const diff = values[i + 1] - values[i];
@@ -94,21 +98,22 @@ function RSI(values, period = 14) {
 }
 
 function VWAP(candles) {
+  if (!candles || !candles.c || !candles.v) return 0;
   let pv = 0, vol = 0;
   for (let i = 0; i < candles.c.length; i++) {
     pv += candles.c[i] * candles.v[i];
     vol += candles.v[i];
   }
-  return (pv / vol).toFixed(2);
+  return (vol === 0 ? 0 : (pv / vol).toFixed(2));
 }
 
 /* ===============================
-   วิเคราะห์ SR + Structure
+   SR + Structure
 ================================ */
 function analyzeStructure(candles) {
+  if (!candles || !candles.h || !candles.l) return { resistance: 0, support: 0 };
   const highs = candles.h.slice(-30);
   const lows = candles.l.slice(-30);
-
   return {
     resistance: Math.max(...highs).toFixed(2),
     support: Math.min(...lows).toFixed(2)
@@ -128,42 +133,42 @@ app.post('/webhook', async (req, res) => {
 
     let sections = [];
 
-    /* ===== พิมพ์ชื่อหุ้น ===== */
     if (isSymbolOnly) {
       const symbol = userText.toUpperCase();
+      try {
+        const daily = await getCandles(symbol, 'D', 180);
+        const intraday = await getCandles(symbol, '60', 10);
 
-      const daily = await getCandles(symbol, 'D', 180);
-      const intraday = await getCandles(symbol, '60', 10);
+        const close = daily.c[daily.c.length - 1];
+        const ema50 = EMA(daily.c.slice(-60), 50).toFixed(2);
+        const ema200 = EMA(daily.c.slice(-220), 200).toFixed(2);
+        const rsi = RSI(daily.c);
+        const vwap = VWAP(intraday);
+        const sr = analyzeStructure(daily);
 
-      const close = daily.c[daily.c.length - 1];
-      const ema50 = EMA(daily.c.slice(-60), 50).toFixed(2);
-      const ema200 = EMA(daily.c.slice(-220), 200).toFixed(2);
-      const rsi = RSI(daily.c);
-      const vwap = VWAP(intraday);
-      const sr = analyzeStructure(daily);
+        sections = [
+          `📊 ${symbol} ภาพรวมราคา  
+ราคาปัจจุบันเคลื่อนไหวบริเวณ ${close} ดอลลาร์ โดยโครงสร้างระยะกลางยังอยู่ในช่วงการสะสมแรงหลังการเคลื่อนไหวรอบก่อนหน้า`,
 
-      sections = [
-        `📊 ${symbol} ภาพรวมราคา  
-ราคาปัจจุบันเคลื่อนไหวบริเวณ ${close} ดอลลาร์ โดยโครงสร้างระยะกลางยังอยู่ในช่วงการสะสมแรงหลังการเคลื่อนไหวรอบก่อนหน้า ซึ่งสะท้อนการชะลอความเร็วของแนวโน้มหลัก`,
+          `📈 Elliott Wave & โครงสร้าง  
+รูปแบบราคาใน Timeframe หลักมีลักษณะของโครงสร้างปรับฐานมากกว่าคลื่นส่ง โดยการไม่ทำ Higher High ต่อเนื่อง`,
 
-        `📈 Elliott Wave & โครงสร้าง  
-รูปแบบราคาใน Timeframe หลักมีลักษณะของโครงสร้างปรับฐานมากกว่าคลื่นส่ง โดยการไม่ทำ Higher High ต่อเนื่อง บ่งชี้ว่าตลาดอาจอยู่ในช่วงคลื่นพักฐานเชิงโครงสร้างก่อนเลือกทิศทางใหม่`,
+          `📐 แนวรับแนวต้าน  
+โซนแนวต้าน ${sr.resistance} ดอลลาร์ / โซนแนวรับ ${sr.support} ดอลลาร์`,
 
-        `📐 แนวรับแนวต้าน  
-โซนแนวต้านสำคัญอยู่บริเวณ ${sr.resistance} ดอลลาร์ ขณะที่โซนแนวรับหลักอยู่แถว ${sr.support} ดอลลาร์ ซึ่งเป็นบริเวณที่แรงซื้อเคยกลับเข้ามาอย่างมีนัยสำคัญ`,
+          `📉 Indicator  
+RSI ล่าสุด ${rsi} | EMA50 ${ema50} | EMA200 ${ema200} | VWAP short-term ${vwap}`,
 
-        `📉 Indicator  
-RSI ล่าสุดอยู่ที่ ${rsi} สะท้อนโมเมนตัมที่เริ่มชะลอ ขณะที่ EMA50 (${ema50}) และ EMA200 (${ema200}) ยังเป็นระดับที่ตลาดใช้เป็นจุดอ้างอิง ส่วน VWAP ระยะสั้นอยู่ที่ ${vwap}`,
+          `🧠 มุมมองตลาด  
+ราคาสะท้อนช่วงรอปัจจัยใหม่ ผู้เล่นใหญ่ยังไม่เปิดไพ่`,
 
-        `🧠 มุมมองตลาด  
-พฤติกรรมราคาสะท้อนภาวะรอปัจจัยใหม่จากตลาด การเคลื่อนไหวในกรอบแคบมักเกิดในช่วงที่ผู้เล่นรายใหญ่ยังไม่เปิดไพ่`,
-
-        `📌 สรุป Signal Zeeker  
-ราคาคือผลลัพธ์ แต่โครงสร้างคือสิ่งที่ต้องจับตา การเคลื่อนไหวใกล้โซนสำคัญจะเป็นตัวบอกเกมถัดไปของตลาด`
-      ];
-    } 
-    /* ===== คำถามทั่วไป ===== */
-    else {
+          `📌 สรุป Signal Zeeker  
+การเคลื่อนไหวใกล้โซนสำคัญจะบอกเกมถัดไปของตลาด`
+        ];
+      } catch (err) {
+        sections = [`📌 Finnhub error: ไม่สามารถดึงข้อมูล ${symbol} ได้ โปรดตรวจสอบ symbol หรือ API Key`];
+      }
+    } else {
       try {
         const ai = await axios.post(
           'https://api.openai.com/v1/chat/completions',
@@ -176,12 +181,7 @@ RSI ล่าสุดอยู่ที่ ${rsi} สะท้อนโมเ�
             max_tokens: 900,
             temperature: 0.6
           },
-          {
-            headers: {
-              Authorization: `Bearer ${OPENAI_API_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          }
+          { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
         );
 
         sections = ai.data.choices[0].message.content
@@ -189,22 +189,14 @@ RSI ล่าสุดอยู่ที่ ${rsi} สะท้อนโมเ�
           .filter(Boolean);
       } catch (err) {
         console.error('OpenAI ERROR:', err.response?.data || err.message);
-        sections = ['📌 เกิดข้อผิดพลาดในการประมวลผลคำถาม AI กรุณาลองใหม่'];
+        sections = ['📌 เกิดข้อผิดพลาดในการประมวลผล AI กรุณาลองใหม่'];
       }
     }
 
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
-      {
-        replyToken: event.replyToken,
-        messages: buildLineMessages(sections)
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${LINE_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
+      { replyToken: event.replyToken, messages: buildLineMessages(sections) },
+      { headers: { Authorization: `Bearer ${LINE_TOKEN}`, 'Content-Type': 'application/json' } }
     );
 
     res.sendStatus(200);
@@ -218,5 +210,5 @@ RSI ล่าสุดอยู่ที่ ${rsi} สะท้อนโมเ�
    START SERVER
 ================================ */
 app.listen(PORT, () => {
-  console.log(`🚀 Signal Zeeker AI Bot (Elliott + PA) running on port ${PORT}`);
+  console.log(`🚀 Signal Zeeker AI Bot running on port ${PORT}`);
 });
