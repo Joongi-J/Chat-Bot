@@ -1,21 +1,12 @@
-// flexBuilder.js
-
-function formatNumber(num, digit = 2) {
-  return Number(num).toLocaleString('en-US', {
-    minimumFractionDigits: digit,
-    maximumFractionDigits: digit
-  });
-}
-
-function buildFlex(data) {
+function baseFlex(data) {
   const {
     symbol,
     name,
     price,
     change,
     percent,
-    market,
     currency,
+    market,
     status
   } = data;
 
@@ -25,7 +16,7 @@ function buildFlex(data) {
 
   return {
     type: 'flex',
-    altText: `${symbol} Price Update`,
+    altText: `${symbol} Price`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -34,83 +25,40 @@ function buildFlex(data) {
         layout: 'vertical',
         spacing: 'md',
         contents: [
-
-          // ===== Header =====
           {
-            type: 'box',
-            layout: 'vertical',
-            contents: [
-              {
-                type: 'text',
-                text: symbol,
-                weight: 'bold',
-                size: 'xl',
-                color: '#FFFFFF'
-              },
-              {
-                type: 'text',
-                text: name,
-                size: 'sm',
-                color: '#AAAAAA'
-              }
-            ]
+            type: 'text',
+            text: symbol,
+            size: 'xl',
+            weight: 'bold',
+            color: '#FFFFFF'
           },
-
+          {
+            type: 'text',
+            text: name,
+            size: 'sm',
+            color: '#AAAAAA'
+          },
           {
             type: 'separator',
             margin: 'md'
           },
-
-          // ===== Price =====
           {
-            type: 'box',
-            layout: 'vertical',
-            spacing: 'sm',
-            contents: [
-              {
-                type: 'text',
-                text: 'PRICE',
-                size: 'xs',
-                color: '#888888'
-              },
-              {
-                type: 'text',
-                text: `${formatNumber(price)} ${currency}`,
-                size: 'xxl',
-                weight: 'bold',
-                color: '#FFFFFF'
-              }
-            ]
+            type: 'text',
+            text: `${price.toLocaleString()} ${currency}`,
+            size: 'xxl',
+            weight: 'bold',
+            color: '#FFFFFF'
           },
-
-          // ===== Change =====
           {
-            type: 'box',
-            layout: 'horizontal',
-            spacing: 'sm',
-            contents: [
-              {
-                type: 'text',
-                text: `${arrow} ${formatNumber(Math.abs(change))}`,
-                size: 'md',
-                weight: 'bold',
-                color
-              },
-              {
-                type: 'text',
-                text: `(${up ? '+' : '-'}${formatNumber(Math.abs(percent))}%)`,
-                size: 'md',
-                color
-              }
-            ]
+            type: 'text',
+            text: `${arrow} ${Math.abs(change).toLocaleString()} (${up ? '+' : '-'}${Math.abs(percent)}%)`,
+            size: 'md',
+            color
           },
-
           {
             type: 'separator',
             margin: 'md'
           },
-
-          // ===== Footer Info =====
           {
             type: 'box',
             layout: 'horizontal',
@@ -126,20 +74,23 @@ function buildFlex(data) {
                 text: status,
                 size: 'xs',
                 align: 'end',
-                color: status === 'OPEN' ? '#00B16A' : '#E67E22'
+                color: '#F1C40F'
               }
             ]
           }
-
         ]
       },
       styles: {
         body: {
-          backgroundColor: '#0B0E11' // Bloomberg black
+          backgroundColor: '#0B0E11'
         }
       }
     }
   };
 }
 
-module.exports = buildFlex;
+module.exports = {
+  buildStockFlex: baseFlex,
+  buildCryptoFlex: baseFlex,
+  buildGoldFlex: baseFlex
+};
