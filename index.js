@@ -10,27 +10,28 @@ app.use(express.json());
    CONFIG
 ================================ */
 const PORT = process.env.PORT || 3000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const LINE_TOKEN = process.env.LINE_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* ===============================
-   CONTEXT STORE (TTL 1 นาที)
+   CONTEXT MEMORY (SMART)
 ================================ */
 const contextMap = new Map();
+const CONTEXT_TTL = 2 * 60 * 1000;
 
-function setContext(userId, symbol) {
-  contextMap.set(userId, { symbol, updatedAt: Date.now() });
+function setContext(userId, ctx) {
+  contextMap.set(userId, { ...ctx, updatedAt: Date.now() });
 }
 
 function getContext(userId) {
   const ctx = contextMap.get(userId);
   if (!ctx) return null;
-  if (Date.now() - ctx.updatedAt > 60 * 1000) {
+  if (Date.now() - ctx.updatedAt > CONTEXT_TTL) {
     contextMap.delete(userId);
     return null;
   }
-  return ctx.symbol;
+  return ctx;
 }
 
 function clearContext(userId) {
@@ -38,102 +39,119 @@ function clearContext(userId) {
 }
 
 /* ===============================
-   SYSTEM PROMPT
+   INTENT DETECTOR
 ================================ */
-const SYSTEM_PROMPT = `
-คุณคือ AI นักวิเคราะห์ตลาดของเพจ Signal Zeeker
-คุณเป็นผู้ชาย ใช้คำว่า "ผม" และลงท้ายทุกคำตอบด้วย "ครับ"
-- วิเคราะห์แบบสำนักข่าว
-- ไม่ชี้นำซื้อขาย
-`;
-
-/* ===============================
-   FINNHUB : STOCK
-================================ */
-async function getQuote(symbol) {
-  try {
-    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
-    const res = await axios.get(url);
-    const q = res.data;
-
-    if (!q || q.c === 0) return null;
-
-    const lastUpdate = new Date(q.t * 1000);
-    const now = new Date();
-
-    const isMarketOpen =
-      lastUpdate.toDateString() === now.toDateString() &&
-      Math.abs(now - lastUpdate) < 10 * 60 * 1000;
-
-    return {
-      symbol,
-      market: 'stock',
-      current: q.c,
-      open: q.o,
-      prevClose: q.pc,
-      marketStatus: isMarketOpen ? 'OPEN' : 'CLOSED',
-      lastUpdate
-    };
-  } catch (err) {
-    console.error('Finnhub ERROR:', err.message);
-    return null;
-  }
+function detectIntent(text) {
+  if (/ราคา|เปิด|ปิด|เท่าไหร่/i.test(text)) return 'price';
+  if (/แนวรับ|แนวต้าน|ema|เทคนิค/i.test(text)) return 'technical';
+  if (/ข่าว|เกิดอะไร|กระทบ/i.test(text)) return 'news';
+  if (/น่าลงทุน|มุมมอง|แนวโน้ม|ดีไหม/i.test(text)) return 'analysis';
+  return 'unknown';
 }
 
 /* ===============================
-   BINANCE : CRYPTO (เพิ่ม)
+   ASSET DETECTOR
 ================================ */
-async function getCryptoQuote(pair) {
-  try {
-    const res = await axios.get(
-      'https://api.binance.com/api/v3/ticker/24hr',
-      { params: { symbol: pair } }
-    );
-    const q = res.data;
+function detectAsset(text) {
+  const t = text.toUpperCase();
 
-    return {
-      symbol: pair,
-      market: 'crypto',
-      current: Number(q.lastPrice),
-      open: Number(q.openPrice),
-      prevClose: Number(q.prevClosePrice),
-      marketStatus: '24H',
-      lastUpdate: new Date(q.closeTime)
-    };
-  } catch (err) {
-    console.error('Binance ERROR:', err.message);
-    return null;
+  if (/ทอง|GOLD|XAU/.test(t)) {
+    return { type: 'gold', symbol: 'XAUUSD' };
   }
+
+  if (/BTC|ETH|SOL|DOGE/.test(t)) {
+    return { type: 'crypto', symbol: t.match(/BTC|ETH|SOL|DOGE/)[0] };
+  }
+
+  if (/^[A-Z]{1,6}$/.test(t)) {
+    return { type: 'stock', symbol: t };
+  }
+
+  return null;
 }
 
 /* ===============================
-   OPENAI
+   DATA FETCHERS
 ================================ */
-async function askOpenAI(prompt) {
-  try {
-    const res = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4.1-mini',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 1000
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
+async function getStockQuote(symbol) {
+  const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
+  const { data } = await axios.get(url);
+  if (!data || data.c === 0) return null;
+  return {
+    symbol,
+    current: data.c,
+    open: data.o,
+    prevClose: data.pc,
+    assetType: 'stock'
+  };
+}
+
+async function getCryptoQuote(symbol) {
+  const map = {
+    BTC: 'bitcoin',
+    ETH: 'ethereum',
+    SOL: 'solana',
+    DOGE: 'dogecoin'
+  };
+  const id = map[symbol];
+  if (!id) return null;
+
+  const { data } = await axios.get(
+    'https://api.coingecko.com/api/v3/simple/price',
+    {
+      params: {
+        ids: id,
+        vs_currencies: 'usd',
+        include_24hr_change: true
       }
-    );
+    }
+  );
 
-    return res.data.choices[0].message.content;
-  } catch {
-    return '📌 ตอนนี้ผมไม่สามารถประมวลผลคำตอบได้ครับ';
+  return {
+    symbol,
+    current: data[id].usd,
+    changePercent: data[id].usd_24h_change,
+    assetType: 'crypto'
+  };
+}
+
+/* ===============================
+   OPENAI (CONTEXT-AWARE)
+================================ */
+async function askAI(context, question) {
+  const messages = [
+    {
+      role: 'system',
+      content: `
+คุณคือ AI นักวิเคราะห์ตลาดของเพจ Signal Zeeker
+ตอบแบบให้ข้อมูล วิเคราะห์จริง ไม่ชี้นำลงทุน
+ถ้าไม่มั่นใจให้ถามกลับผู้ใช้
+`
+    }
+  ];
+
+  if (context) {
+    messages.push({
+      role: 'assistant',
+      content: `บริบทก่อนหน้า: ${JSON.stringify(context)}`
+    });
   }
+
+  messages.push({ role: 'user', content: question });
+
+  const res = await axios.post(
+    'https://api.openai.com/v1/chat/completions',
+    {
+      model: 'gpt-4.1-mini',
+      messages,
+      temperature: 0.6
+    },
+    {
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
+    }
+  );
+
+  return res.data.choices[0].message.content;
 }
 
 /* ===============================
@@ -161,51 +179,62 @@ app.post('/webhook', async (req, res) => {
     if (!event || event.type !== 'message') return res.sendStatus(200);
 
     const userId = event.source.userId;
-    const text = event.message.text.trim().toUpperCase();
+    const text = event.message.text.trim();
 
-    clearContext(userId);
-    let data = null;
+    let ctx = getContext(userId);
+    const intent = detectIntent(text);
+    const asset = detectAsset(text);
 
-    /* ===== CRYPTO ===== */
-    if (/^[A-Z]{3,10}USDT$/.test(text)) {
-      data = await getCryptoQuote(text);
-    }
+    /* ===== ASSET FOUND ===== */
+    if (asset) {
+      let data = null;
 
-    /* ===== STOCK ===== */
-    else if (/^[A-Z]{1,6}$/.test(text)) {
-      data = await getQuote(text);
-    }
+      if (asset.type === 'stock') data = await getStockQuote(asset.symbol);
+      if (asset.type === 'crypto') data = await getCryptoQuote(asset.symbol);
 
-    else {
-      await replyLine(event.replyToken, [
-        { type: 'text', text: '📌 รูปแบบไม่ถูกต้อง (หุ้น: AAPL | คริปโต: BTCUSDT)' }
-      ]);
+      if (!data) {
+        await replyLine(event.replyToken, [
+          { type: 'text', text: 'ผมยังไม่สามารถดึงข้อมูลสินทรัพย์นี้ได้ครับ' }
+        ]);
+        return res.sendStatus(200);
+      }
+
+      setContext(userId, {
+        assetType: asset.type,
+        symbol: asset.symbol,
+        intent
+      });
+
+      const flex = buildStockFlex(data);
+      await replyLine(event.replyToken, [flex]);
       return res.sendStatus(200);
     }
 
-    if (!data) {
-      await replyLine(event.replyToken, [
-        { type: 'text', text: '📌 ไม่สามารถดึงข้อมูลราคาได้ในขณะนี้ครับ' }
-      ]);
+    /* ===== CONTINUATION ===== */
+    if (ctx) {
+      const ai = await askAI(ctx, text);
+      await replyLine(event.replyToken, [{ type: 'text', text: ai }]);
       return res.sendStatus(200);
     }
 
-    setContext(userId, data.symbol);
-
-    const flex = buildStockFlex(data);
-    await replyLine(event.replyToken, [flex]);
+    /* ===== NOT SURE → ASK ===== */
+    await replyLine(event.replyToken, [
+      {
+        type: 'text',
+        text: 'เธอหมายถึงสินทรัพย์อะไร (หุ้น / คริปโต / ทอง) และต้องการข้อมูลด้านไหนครับ?'
+      }
+    ]);
 
     res.sendStatus(200);
-
   } catch (err) {
-    console.error('SERVER ERROR:', err.message);
+    console.error(err);
     res.sendStatus(500);
   }
 });
 
 /* ===============================
-   START SERVER
+   START
 ================================ */
 app.listen(PORT, () => {
-  console.log(`🚀 Signal Zeeker AI Bot running on port ${PORT}`);
+  console.log(`🚀 Smart Signal Zeeker Bot running on ${PORT}`);
 });
