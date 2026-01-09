@@ -89,18 +89,30 @@ function splitForLine(text, maxLen = 900) {
 
 /* ===============================
    FINNHUB: QUOTE ONLY (FREE)
+   + Market Status Detection
 ================================ */
 async function getQuote(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
     const res = await axios.get(url);
+    const q = res.data;
 
-    if (!res.data || res.data.c === 0) return null;
+    if (!q || q.c === 0) return null;
+
+    const lastUpdate = new Date(q.t * 1000);
+    const now = new Date();
+
+    // ถ้าอัปเดตภายในวันเดียวกัน และไม่เกิน 10 นาที → ตลาดเปิด
+    const isMarketOpen =
+      lastUpdate.toDateString() === now.toDateString() &&
+      Math.abs(now - lastUpdate) < 10 * 60 * 1000;
 
     return {
-      current: res.data.c,
-      open: res.data.o,
-      prevClose: res.data.pc
+      current: q.c,
+      open: q.o,
+      prevClose: q.pc,
+      marketStatus: isMarketOpen ? 'OPEN' : 'CLOSED',
+      lastUpdate
     };
   } catch (err) {
     console.error('Finnhub ERROR:', err.response?.data || err.message);
@@ -178,7 +190,7 @@ app.post('/webhook', async (req, res) => {
 
       if (!quote) {
         await replyLine(event.replyToken, [
-          { type: 'text', text: `📌 ผมไม่สามารถดึงราคาปัจจุบันของ ${symbol} ได้ครับ` }
+          { type: 'text', text: `📌 ผมไม่สามารถดึงข้อมูลราคาของ ${symbol} ได้ครับ` }
         ]);
         return res.sendStatus(200);
       }
@@ -189,7 +201,9 @@ app.post('/webhook', async (req, res) => {
         symbol,
         quote.current.toFixed(2),
         quote.open.toFixed(2),
-        quote.prevClose.toFixed(2)
+        quote.prevClose.toFixed(2),
+        quote.marketStatus,
+        quote.lastUpdate
       );
 
       await replyLine(event.replyToken, [flex]);
