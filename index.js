@@ -30,7 +30,6 @@ function getContext(userId) {
   const ctx = contextMap.get(userId);
   if (!ctx) return null;
 
-  // หมดอายุ 1 นาที
   if (Date.now() - ctx.updatedAt > 60 * 1000) {
     contextMap.delete(userId);
     return null;
@@ -43,19 +42,20 @@ function clearContext(userId) {
 }
 
 /* ===============================
-   SYSTEM PROMPT (ไม่ FIX)
+   SYSTEM PROMPT (Dynamic จริง)
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI นักวิเคราะห์ตลาดของเพจ Signal Zeeker
 คุณเป็นผู้ชาย ใช้คำว่า "ผม" และลงท้ายทุกคำตอบด้วย "ครับ"
 
-กติกาสำคัญ:
-- ปรับความยาวและโครงสร้างตามคำถาม (ห้ามใช้แพทเทิร์นเดิมซ้ำ)
+กติกา:
+- ตอบแบบวิเคราะห์จริง ไม่ใช้แพทเทิร์นเดิมซ้ำ
+- ปรับโครงสร้างตามคำถาม (ไม่จำเป็นต้องครบทุกหัวข้อ)
 - ถ้าเป็นคำถามต่อเนื่อง ให้เชื่อมโยงบริบทก่อนหน้า
 - ถ้าเป็นคำถามใหม่ ให้ตัดบริบทเดิมทันที
 - ถ้าไม่มีข้อมูลจริง ให้บอกตรง ๆ
 - ห้ามชี้นำซื้อขาย
-- ใช้โทนวิเคราะห์แบบสำนักข่าว ไม่ขายฝัน
+- โทนสำนักข่าว มืออาชีพ ไม่ขายฝัน
 `;
 
 /* ===============================
@@ -88,73 +88,71 @@ function splitForLine(text, maxLen = 900) {
 }
 
 /* ===============================
-   FINNHUB: QUOTE
+   FINNHUB: QUOTE ONLY (FREE)
 ================================ */
 async function getQuote(symbol) {
-  const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
-  const res = await axios.get(url);
-  return res.data;
-}
+  try {
+    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
+    const res = await axios.get(url);
 
-/* ===============================
-   FINNHUB: CANDLES
-================================ */
-async function getCandles(symbol, resolution = 'D', days = 120) {
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - days * 86400;
+    if (!res.data || res.data.c === 0) return null;
 
-  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
-  const res = await axios.get(url);
-
-  if (res.data.s !== 'ok') return null;
-  return res.data;
-}
-
-/* ===============================
-   INDICATORS
-================================ */
-function EMA(values, period) {
-  const k = 2 / (period + 1);
-  let ema = values[0];
-  for (let i = 1; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
+    return {
+      current: res.data.c,
+      open: res.data.o,
+      prevClose: res.data.pc
+    };
+  } catch (err) {
+    console.error('Finnhub ERROR:', err.response?.data || err.message);
+    return null;
   }
-  return Number(ema.toFixed(2));
-}
-
-function analyzeSR(candles) {
-  const highs = candles.h.slice(-20);
-  const lows = candles.l.slice(-20);
-  return {
-    resistance: Math.max(...highs).toFixed(2),
-    support: Math.min(...lows).toFixed(2)
-  };
 }
 
 /* ===============================
    OPENAI
 ================================ */
 async function askOpenAI(prompt) {
-  const res = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    {
-      model: 'gpt-4.1-mini',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.7,
-      max_tokens: 1000
-    },
+  try {
+    const res = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4.1-mini',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 1000
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    return res.data.choices[0].message.content;
+  } catch (err) {
+    console.error('OpenAI ERROR:', err.response?.data || err.message);
+    return '📌 ตอนนี้ผมไม่สามารถประมวลผลคำตอบได้ครับ';
+  }
+}
+
+/* ===============================
+   LINE REPLY HELPER
+================================ */
+async function replyLine(replyToken, messages) {
+  await axios.post(
+    'https://api.line.me/v2/bot/message/reply',
+    { replyToken, messages },
     {
       headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${LINE_TOKEN}`,
         'Content-Type': 'application/json'
       }
     }
   );
-
-  return res.data.choices[0].message.content;
 }
 
 /* ===============================
@@ -177,36 +175,28 @@ app.post('/webhook', async (req, res) => {
       clearContext(userId);
 
       const quote = await getQuote(symbol);
-      const candles = await getCandles(symbol);
 
-      if (!quote || !candles) {
+      if (!quote) {
         await replyLine(event.replyToken, [
-          { type: 'text', text: `📌 ผมไม่สามารถดึงข้อมูลหุ้น ${symbol} ได้ในขณะนี้ครับ` }
+          { type: 'text', text: `📌 ผมไม่สามารถดึงราคาปัจจุบันของ ${symbol} ได้ครับ` }
         ]);
         return res.sendStatus(200);
       }
-
-      const close = quote.c.toFixed(2);
-      const ema50 = EMA(candles.c.slice(-60), 50);
-      const ema200 = EMA(candles.c.slice(-220), 200);
-      const sr = analyzeSR(candles);
 
       setContext(userId, symbol);
 
       const flex = buildStockFlex(
         symbol,
-        close,
-        sr.support,
-        sr.resistance,
-        ema50,
-        ema200
+        quote.current.toFixed(2),
+        quote.open.toFixed(2),
+        quote.prevClose.toFixed(2)
       );
 
       await replyLine(event.replyToken, [flex]);
       return res.sendStatus(200);
     }
 
-    /* ===== คำถามต่อเนื่อง ===== */
+    /* ===== คำถามต่อเนื่อง / คำถามใหม่ ===== */
     const lastSymbol = getContext(userId);
     if (lastSymbol) {
       userText = `บริบทหุ้น ${lastSymbol}: ${userText}`;
@@ -225,24 +215,8 @@ app.post('/webhook', async (req, res) => {
 });
 
 /* ===============================
-   LINE REPLY HELPER
-================================ */
-async function replyLine(replyToken, messages) {
-  await axios.post(
-    'https://api.line.me/v2/bot/message/reply',
-    { replyToken, messages },
-    {
-      headers: {
-        Authorization: `Bearer ${LINE_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    }
-  );
-}
-
-/* ===============================
    START SERVER
 ================================ */
 app.listen(PORT, () => {
-  console.log(`🚀 Signal Zeeker AI Bot running on port ${PORT}`);
+  console.log(`🚀 Signal Zeeker AI Bot (Finnhub Quote Only) running on port ${PORT}`);
 });
