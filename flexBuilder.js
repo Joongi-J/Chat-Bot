@@ -1,11 +1,18 @@
-// flexBuilder.js
-function buildStockFlex(symbol, price, support, resistance, ema50, ema200) {
-  const ema50Pct = Math.min(Math.max((ema50 / price) * 100, 5), 95);
-  const ema200Pct = Math.min(Math.max((ema200 / price) * 100, 5), 95);
+function buildStockFlex(symbol, current, open, prevClose) {
+  const currentPrice = Number(current);
+  const openPrice = Number(open);
+  const prevClosePrice = Number(prevClose);
+
+  const change = currentPrice - prevClosePrice;
+  const changePct = ((change / prevClosePrice) * 100).toFixed(2);
+
+  const isUp = change >= 0;
+  const color = isUp ? '#00B16A' : '#E74C3C';
+  const arrow = isUp ? '▲' : '▼';
 
   return {
     type: 'flex',
-    altText: `${symbol} Stock Analysis`,
+    altText: `${symbol} ราคา ${currentPrice}`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -14,101 +21,71 @@ function buildStockFlex(symbol, price, support, resistance, ema50, ema200) {
         layout: 'vertical',
         spacing: 'md',
         contents: [
-          {
-            type: 'text',
-            text: symbol,
-            weight: 'bold',
-            size: 'xl'
-          },
-          {
-            type: 'text',
-            text: `ราคา ${price}`,
-            size: 'lg',
-            color: '#111111'
-          },
-          {
-            type: 'separator'
-          },
-          {
-            type: 'text',
-            text: 'EMA Structure',
-            weight: 'bold',
-            margin: 'md'
-          },
+          /* ===== HEADER ===== */
           {
             type: 'box',
-            layout: 'vertical',
+            layout: 'horizontal',
             contents: [
               {
-                type: 'box',
-                layout: 'horizontal',
-                contents: [
-                  { type: 'text', text: 'EMA50', size: 'sm', flex: 2 },
-                  {
-                    type: 'box',
-                    layout: 'vertical',
-                    flex: 5,
-                    contents: [
-                      {
-                        type: 'box',
-                        layout: 'vertical',
-                        width: `${ema50Pct}%`,
-                        height: '8px',
-                        backgroundColor: '#4CAF50'
-                      }
-                    ]
-                  }
-                ]
+                type: 'text',
+                text: symbol,
+                weight: 'bold',
+                size: 'xl',
+                flex: 0
               },
               {
-                type: 'box',
-                layout: 'horizontal',
-                margin: 'sm',
-                contents: [
-                  { type: 'text', text: 'EMA200', size: 'sm', flex: 2 },
-                  {
-                    type: 'box',
-                    layout: 'vertical',
-                    flex: 5,
-                    contents: [
-                      {
-                        type: 'box',
-                        layout: 'vertical',
-                        width: `${ema200Pct}%`,
-                        height: '8px',
-                        backgroundColor: '#FF9800'
-                      }
-                    ]
-                  }
-                ]
+                type: 'text',
+                text: 'Market Price',
+                size: 'sm',
+                color: '#888888',
+                align: 'end'
               }
             ]
           },
-          {
-            type: 'separator',
-            margin: 'md'
-          },
+
+          /* ===== PRICE ===== */
           {
             type: 'text',
-            text: `โซนแนวรับ ${support} | โซนแนวต้าน ${resistance}`,
-            wrap: true,
-            size: 'sm',
-            color: '#555555'
-          }
-        ]
-      },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        contents: [
+            text: currentPrice.toFixed(2),
+            size: '4xl',
+            weight: 'bold',
+            color
+          },
+
+          /* ===== CHANGE ===== */
           {
-            type: 'button',
-            action: {
-              type: 'message',
-              label: 'ดูบทวิเคราะห์ต่อ',
-              text: 'วิเคราะห์ต่อ'
-            },
-            style: 'primary'
+            type: 'text',
+            text: `${arrow} ${change.toFixed(2)} (${changePct}%)`,
+            size: 'md',
+            color
+          },
+
+          {
+            type: 'separator'
+          },
+
+          /* ===== METRICS ===== */
+          {
+            type: 'box',
+            layout: 'vertical',
+            spacing: 'sm',
+            contents: [
+              metricRow('Open', openPrice.toFixed(2)),
+              metricRow('Prev Close', prevClosePrice.toFixed(2))
+            ]
+          },
+
+          {
+            type: 'separator'
+          },
+
+          /* ===== FOOTER ===== */
+          {
+            type: 'text',
+            text: 'Realtime price via Finnhub',
+            size: 'xs',
+            color: '#AAAAAA',
+            align: 'center'
           }
         ]
       }
@@ -116,4 +93,31 @@ function buildStockFlex(symbol, price, support, resistance, ema50, ema200) {
   };
 }
 
-module.exports = { buildStockFlex };
+/* ===============================
+   Helper: Metric Row
+================================ */
+function metricRow(label, value) {
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    contents: [
+      {
+        type: 'text',
+        text: label,
+        size: 'sm',
+        color: '#666666',
+        flex: 0
+      },
+      {
+        type: 'text',
+        text: value,
+        size: 'sm',
+        align: 'end'
+      }
+    ]
+  };
+}
+
+module.exports = {
+  buildStockFlex
+};
