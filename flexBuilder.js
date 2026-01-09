@@ -1,69 +1,91 @@
-function priceColor(change) {
-  return change >= 0 ? '#00B16A' : '#E74C3C';
-}
-
-function priceArrow(change) {
-  return change >= 0 ? '▲' : '▼';
-}
-
 function buildAssetFlex(data) {
-  const {
-    symbol,
-    name,
-    price,
-    change,
-    percent,
-    currency,
-    market
-  } = data;
+  // trend / bias
+  let trend = 'กลาง'; // default
+  if (data.percent > 1) trend = 'ขาขึ้น 📈';
+  else if (data.percent < -1) trend = 'ขาลง 📉';
 
-  const color = priceColor(change);
-  const arrow = priceArrow(change);
+  // สีสำหรับเปลี่ยนตาม trend
+  const color =
+    data.percent > 0.5
+      ? '#0f9d58' // เขียว
+      : data.percent < -0.5
+      ? '#db4437' // แดง
+      : '#f4b400'; // เหลือง
 
   return {
     type: 'flex',
-    altText: `${symbol} ราคา`,
+    altText: `${data.name} - ${data.price} ${data.currency} (${data.percent.toFixed(
+      2
+    )}%)`,
     contents: {
       type: 'bubble',
       size: 'mega',
-      body: {
+      header: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'md',
         contents: [
           {
             type: 'text',
-            text: name,
+            text: `${data.name} (${data.symbol})`,
             weight: 'bold',
-            size: 'lg'
+            size: 'lg',
+            color: '#ffffff'
+          }
+        ],
+        backgroundColor: '#1e1e1e',
+        paddingAll: '12px'
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'baseline',
+            contents: [
+              { type: 'text', text: 'ราคา', size: 'sm', color: '#aaaaaa' },
+              {
+                type: 'text',
+                text: `${data.price} ${data.currency}`,
+                size: 'sm',
+                color: '#ffffff',
+                margin: 'md',
+                flex: 1
+              }
+            ]
           },
           {
-            type: 'text',
-            text: symbol,
-            size: 'sm',
-            color: '#888888'
+            type: 'box',
+            layout: 'baseline',
+            contents: [
+              { type: 'text', text: 'Change', size: 'sm', color: '#aaaaaa' },
+              {
+                type: 'text',
+                text: `${data.change >= 0 ? '+' : ''}${data.change.toFixed(
+                  2
+                )} (${data.percent.toFixed(2)}%)`,
+                size: 'sm',
+                color,
+                margin: 'md',
+                flex: 1
+              }
+            ]
           },
           {
-            type: 'text',
-            text: `${price.toLocaleString()} ${currency}`,
-            size: 'xxl',
-            weight: 'bold'
-          },
-          {
-            type: 'text',
-            text: `${arrow} ${change.toFixed(2)} (${percent.toFixed(2)}%)`,
-            size: 'md',
-            weight: 'bold',
-            color
-          },
-          {
-            type: 'separator'
-          },
-          {
-            type: 'text',
-            text: `Market: ${market}`,
-            size: 'sm',
-            color: '#666666'
+            type: 'box',
+            layout: 'baseline',
+            contents: [
+              { type: 'text', text: 'Trend/Bias', size: 'sm', color: '#aaaaaa' },
+              {
+                type: 'text',
+                text: trend,
+                size: 'sm',
+                color: color,
+                margin: 'md',
+                flex: 1
+              }
+            ]
           }
         ]
       }
@@ -71,6 +93,4 @@ function buildAssetFlex(data) {
   };
 }
 
-module.exports = {
-  buildAssetFlex
-};
+module.exports = { buildAssetFlex };
