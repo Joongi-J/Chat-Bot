@@ -1,47 +1,31 @@
-/* =====================================
-   flexBuilder.js
-   Bloomberg Style (SAFE VERSION)
-===================================== */
+// flexBuilder.js
 
-function safeText(v, fallback = '-') {
-  if (v === undefined || v === null || v === '') return fallback;
-  return String(v);
+function formatNumber(num, digit = 2) {
+  return Number(num).toLocaleString('en-US', {
+    minimumFractionDigits: digit,
+    maximumFractionDigits: digit
+  });
 }
 
-function num(v, fallback = 0) {
-  const n = Number(v);
-  return isNaN(n) ? fallback : n;
-}
-
-function buildStockFlex(data = {}) {
-  const symbol = safeText(data.symbol, 'N/A');
-  const current = num(data.current);
-  const open = num(data.open);
-  const prevClose = num(data.prevClose);
-
-  const marketStatus = safeText(data.marketStatus, 'CLOSED');
-  const lastUpdate = data.lastUpdate;
-
-  const change = current - prevClose;
-  const changePct = prevClose !== 0 ? (change / prevClose) * 100 : 0;
+function buildFlex(data) {
+  const {
+    symbol,
+    name,
+    price,
+    change,
+    percent,
+    market,
+    currency,
+    status
+  } = data;
 
   const up = change >= 0;
   const color = up ? '#00B16A' : '#E74C3C';
   const arrow = up ? '▲' : '▼';
 
-  const marketColor =
-    marketStatus === 'OPEN' ? '#00B16A' : '#9CA3AF';
-
-  const timeText = lastUpdate
-    ? new Date(lastUpdate).toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit'
-      })
-    : '-';
-
   return {
     type: 'flex',
-    altText: `${symbol} ${current.toFixed(2)}`,
+    altText: `${symbol} Price Update`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -51,104 +35,111 @@ function buildStockFlex(data = {}) {
         spacing: 'md',
         contents: [
 
-          /* ===== HEADER ===== */
+          // ===== Header =====
           {
             type: 'box',
-            layout: 'horizontal',
+            layout: 'vertical',
             contents: [
               {
                 type: 'text',
                 text: symbol,
                 weight: 'bold',
                 size: 'xl',
-                color: '#111827',
-                flex: 1
+                color: '#FFFFFF'
               },
               {
                 type: 'text',
-                text: marketStatus,
+                text: name,
                 size: 'sm',
-                weight: 'bold',
-                color: marketColor,
-                align: 'end'
+                color: '#AAAAAA'
               }
             ]
           },
 
           {
-            type: 'text',
-            text: `Updated ${timeText}`,
-            size: 'xs',
-            color: '#6B7280'
+            type: 'separator',
+            margin: 'md'
           },
 
-          { type: 'separator', margin: 'md' },
-
-          /* ===== PRICE ===== */
-          {
-            type: 'box',
-            layout: 'vertical',
-            margin: 'lg',
-            contents: [
-              {
-                type: 'text',
-                text: current.toFixed(2),
-                size: 'xxl',
-                weight: 'bold',
-                color: '#111827'
-              },
-              {
-                type: 'text',
-                text: `${arrow} ${Math.abs(change).toFixed(2)} (${Math.abs(changePct).toFixed(2)}%)`,
-                size: 'md',
-                weight: 'bold',
-                color
-              }
-            ]
-          },
-
-          { type: 'separator', margin: 'lg' },
-
-          /* ===== DETAILS ===== */
+          // ===== Price =====
           {
             type: 'box',
             layout: 'vertical',
             spacing: 'sm',
             contents: [
-              buildRow('Open', open),
-              buildRow('Prev Close', prevClose)
+              {
+                type: 'text',
+                text: 'PRICE',
+                size: 'xs',
+                color: '#888888'
+              },
+              {
+                type: 'text',
+                text: `${formatNumber(price)} ${currency}`,
+                size: 'xxl',
+                weight: 'bold',
+                color: '#FFFFFF'
+              }
+            ]
+          },
+
+          // ===== Change =====
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'text',
+                text: `${arrow} ${formatNumber(Math.abs(change))}`,
+                size: 'md',
+                weight: 'bold',
+                color
+              },
+              {
+                type: 'text',
+                text: `(${up ? '+' : '-'}${formatNumber(Math.abs(percent))}%)`,
+                size: 'md',
+                color
+              }
+            ]
+          },
+
+          {
+            type: 'separator',
+            margin: 'md'
+          },
+
+          // ===== Footer Info =====
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              {
+                type: 'text',
+                text: market,
+                size: 'xs',
+                color: '#AAAAAA'
+              },
+              {
+                type: 'text',
+                text: status,
+                size: 'xs',
+                align: 'end',
+                color: status === 'OPEN' ? '#00B16A' : '#E67E22'
+              }
             ]
           }
+
         ]
+      },
+      styles: {
+        body: {
+          backgroundColor: '#0B0E11' // Bloomberg black
+        }
       }
     }
   };
 }
 
-function buildRow(label, value) {
-  return {
-    type: 'box',
-    layout: 'horizontal',
-    contents: [
-      {
-        type: 'text',
-        text: safeText(label),
-        size: 'sm',
-        color: '#6B7280',
-        flex: 1
-      },
-      {
-        type: 'text',
-        text: num(value).toFixed(2),
-        size: 'sm',
-        weight: 'bold',
-        color: '#111827',
-        align: 'end'
-      }
-    ]
-  };
-}
-
-module.exports = {
-  buildStockFlex
-};
+module.exports = buildFlex;
