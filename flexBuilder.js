@@ -12,7 +12,7 @@ function buildStockFlex(symbol, current, open, prevClose) {
 
   return {
     type: 'flex',
-    altText: `${symbol} ราคา ${currentPrice}`,
+    altText: `${symbol} ${currentPrice.toFixed(2)}`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -35,7 +35,7 @@ function buildStockFlex(symbol, current, open, prevClose) {
               },
               {
                 type: 'text',
-                text: 'Market Price',
+                text: 'Market',
                 size: 'sm',
                 color: '#888888',
                 align: 'end'
@@ -70,22 +70,9 @@ function buildStockFlex(symbol, current, open, prevClose) {
             layout: 'vertical',
             spacing: 'sm',
             contents: [
-              metricRow('Open', openPrice.toFixed(2)),
+              metricRow('Open (Session)', openPrice.toFixed(2)),
               metricRow('Prev Close', prevClosePrice.toFixed(2))
             ]
-          },
-
-          {
-            type: 'separator'
-          },
-
-          /* ===== FOOTER ===== */
-          {
-            type: 'text',
-            text: 'Realtime price via Finnhub',
-            size: 'xs',
-            color: '#AAAAAA',
-            align: 'center'
           }
         ]
       }
