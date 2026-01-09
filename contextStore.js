@@ -1,18 +1,16 @@
-// contextStore.js
-
 const contextMap = new Map();
 
 /*
-Context structure:
+context structure:
 {
-  symbol: 'BTCUSDT',
-  intent: 'CRYPTO',
+  symbol: 'BTC',
+  market: 'CRYPTO' | 'STOCK' | 'GOLD',
   updatedAt: timestamp
 }
 */
 
 function getContext(userId) {
-  return contextMap.get(userId);
+  return contextMap.get(userId) || null;
 }
 
 function setContext(userId, context) {
@@ -26,7 +24,7 @@ function clearContext(userId) {
   contextMap.delete(userId);
 }
 
-function isContextExpired(ctx, ttl = 60 * 1000) { // 1 นาที
+function isContextExpired(ctx, ttl = 60 * 1000) {
   if (!ctx) return true;
   return Date.now() - ctx.updatedAt > ttl;
 }
