@@ -1,16 +1,44 @@
-function buildStockFlex(symbol, current, open, prevClose, marketStatus) {
-  const c = Number(current);
-  const pc = Number(prevClose);
-  const change = c - pc;
-  const pct = ((change / pc) * 100).toFixed(2);
+/* =====================================
+   flexBuilder.js
+   Bloomberg / Yahoo Finance Style
+   ▲ ▼ Arrow + Color
+===================================== */
 
+function buildStockFlex({
+  symbol,
+  current,
+  open,
+  prevClose,
+  marketStatus,
+  lastUpdate
+}) {
+  const cur = Number(current);
+  const pc = Number(prevClose);
+  const op = Number(open);
+
+  const change = cur - pc;
+  const changePct = pc !== 0 ? ((change / pc) * 100) : 0;
+
+  /* ===== Arrow & Color ===== */
   const up = change >= 0;
-  const color = up ? '#00B16A' : '#E74C3C';
+  const color = up ? '#00B16A' : '#E74C3C';   // Green / Red
   const arrow = up ? '▲' : '▼';
+
+  const marketColor = marketStatus === 'OPEN'
+    ? '#00B16A'
+    : '#9CA3AF';
+
+  const timeText = lastUpdate
+    ? new Date(lastUpdate).toLocaleString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short'
+      })
+    : '-';
 
   return {
     type: 'flex',
-    altText: `${symbol} ${c.toFixed(2)}`,
+    altText: `${symbol} ${cur.toFixed(2)}`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -19,51 +47,92 @@ function buildStockFlex(symbol, current, open, prevClose, marketStatus) {
         layout: 'vertical',
         spacing: 'md',
         contents: [
-          /* HEADER */
+
+          /* ===== HEADER ===== */
           {
             type: 'box',
             layout: 'horizontal',
             contents: [
-              { type: 'text', text: symbol, weight: 'bold', size: 'xl' },
               {
                 type: 'text',
-                text: marketStatus === 'OPEN' ? 'Market Open' : 'Market Closed',
+                text: symbol,
+                weight: 'bold',
+                size: 'xl',
+                color: '#111827',
+                flex: 1
+              },
+              {
+                type: 'text',
+                text: marketStatus,
                 size: 'sm',
-                color: marketStatus === 'OPEN' ? '#00B16A' : '#999999',
+                weight: 'bold',
+                color: marketColor,
                 align: 'end'
               }
             ]
           },
 
-          /* PRICE */
           {
             type: 'text',
-            text: c.toFixed(2),
-            size: '4xl',
-            weight: 'bold',
-            color
+            text: `Updated ${timeText}`,
+            size: 'xs',
+            color: '#6B7280'
           },
 
-          /* CHANGE */
           {
-            type: 'text',
-            text: `${arrow} ${change.toFixed(2)} (${pct}%)`,
-            size: 'md',
-            color
+            type: 'separator',
+            margin: 'md'
           },
 
-          { type: 'separator' },
+          /* ===== PRICE ===== */
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            contents: [
+              {
+                type: 'text',
+                text: cur.toFixed(2),
+                size: 'xxl',
+                weight: 'bold',
+                color: '#111827'
+              },
+              {
+                type: 'text',
+                text: `${arrow} ${Math.abs(change).toFixed(2)} (${Math.abs(changePct).toFixed(2)}%)`,
+                size: 'md',
+                weight: 'bold',
+                color
+              }
+            ]
+          },
 
-          /* METRICS */
-          metricRow('Open (Session)', open ? open.toFixed(2) : '—'),
-          metricRow('Prev Close', pc.toFixed(2))
+          {
+            type: 'separator',
+            margin: 'lg'
+          },
+
+          /* ===== DETAILS ===== */
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
+            contents: [
+              buildRow('Open', op),
+              buildRow('Prev Close', pc)
+            ]
+          }
         ]
       }
     }
   };
 }
 
-function metricRow(label, value) {
+/* ===============================
+   Helper Row
+================================ */
+function buildRow(label, value) {
   return {
     type: 'box',
     layout: 'horizontal',
@@ -72,16 +141,21 @@ function metricRow(label, value) {
         type: 'text',
         text: label,
         size: 'sm',
-        color: '#666666'
+        color: '#6B7280',
+        flex: 1
       },
       {
         type: 'text',
-        text: value,
+        text: Number(value).toFixed(2),
         size: 'sm',
+        weight: 'bold',
+        color: '#111827',
         align: 'end'
       }
     ]
   };
 }
 
-module.exports = { buildStockFlex };
+module.exports = {
+  buildStockFlex
+};
