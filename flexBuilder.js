@@ -1,18 +1,16 @@
-function buildStockFlex(symbol, current, open, prevClose) {
-  const currentPrice = Number(current);
-  const openPrice = Number(open);
-  const prevClosePrice = Number(prevClose);
+function buildStockFlex(symbol, current, open, prevClose, marketStatus) {
+  const c = Number(current);
+  const pc = Number(prevClose);
+  const change = c - pc;
+  const pct = ((change / pc) * 100).toFixed(2);
 
-  const change = currentPrice - prevClosePrice;
-  const changePct = ((change / prevClosePrice) * 100).toFixed(2);
-
-  const isUp = change >= 0;
-  const color = isUp ? '#00B16A' : '#E74C3C';
-  const arrow = isUp ? '▲' : '▼';
+  const up = change >= 0;
+  const color = up ? '#00B16A' : '#E74C3C';
+  const arrow = up ? '▲' : '▼';
 
   return {
     type: 'flex',
-    altText: `${symbol} ${currentPrice.toFixed(2)}`,
+    altText: `${symbol} ${c.toFixed(2)}`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -21,68 +19,50 @@ function buildStockFlex(symbol, current, open, prevClose) {
         layout: 'vertical',
         spacing: 'md',
         contents: [
-          /* ===== HEADER ===== */
+          /* HEADER */
           {
             type: 'box',
             layout: 'horizontal',
             contents: [
+              { type: 'text', text: symbol, weight: 'bold', size: 'xl' },
               {
                 type: 'text',
-                text: symbol,
-                weight: 'bold',
-                size: 'xl',
-                flex: 0
-              },
-              {
-                type: 'text',
-                text: 'Market',
+                text: marketStatus === 'OPEN' ? 'Market Open' : 'Market Closed',
                 size: 'sm',
-                color: '#888888',
+                color: marketStatus === 'OPEN' ? '#00B16A' : '#999999',
                 align: 'end'
               }
             ]
           },
 
-          /* ===== PRICE ===== */
+          /* PRICE */
           {
             type: 'text',
-            text: currentPrice.toFixed(2),
+            text: c.toFixed(2),
             size: '4xl',
             weight: 'bold',
             color
           },
 
-          /* ===== CHANGE ===== */
+          /* CHANGE */
           {
             type: 'text',
-            text: `${arrow} ${change.toFixed(2)} (${changePct}%)`,
+            text: `${arrow} ${change.toFixed(2)} (${pct}%)`,
             size: 'md',
             color
           },
 
-          {
-            type: 'separator'
-          },
+          { type: 'separator' },
 
-          /* ===== METRICS ===== */
-          {
-            type: 'box',
-            layout: 'vertical',
-            spacing: 'sm',
-            contents: [
-              metricRow('Open (Session)', openPrice.toFixed(2)),
-              metricRow('Prev Close', prevClosePrice.toFixed(2))
-            ]
-          }
+          /* METRICS */
+          metricRow('Open (Session)', open ? open.toFixed(2) : '—'),
+          metricRow('Prev Close', pc.toFixed(2))
         ]
       }
     }
   };
 }
 
-/* ===============================
-   Helper: Metric Row
-================================ */
 function metricRow(label, value) {
   return {
     type: 'box',
@@ -92,8 +72,7 @@ function metricRow(label, value) {
         type: 'text',
         text: label,
         size: 'sm',
-        color: '#666666',
-        flex: 0
+        color: '#666666'
       },
       {
         type: 'text',
@@ -105,6 +84,4 @@ function metricRow(label, value) {
   };
 }
 
-module.exports = {
-  buildStockFlex
-};
+module.exports = { buildStockFlex };
