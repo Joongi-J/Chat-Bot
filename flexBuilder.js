@@ -1,4 +1,12 @@
-function baseFlex(data) {
+function priceColor(change) {
+  return change >= 0 ? '#00B16A' : '#E74C3C';
+}
+
+function priceArrow(change) {
+  return change >= 0 ? '▲' : '▼';
+}
+
+function buildAssetFlex(data) {
   const {
     symbol,
     name,
@@ -6,17 +14,15 @@ function baseFlex(data) {
     change,
     percent,
     currency,
-    market,
-    status
+    market
   } = data;
 
-  const up = change >= 0;
-  const color = up ? '#00B16A' : '#E74C3C';
-  const arrow = up ? '▲' : '▼';
+  const color = priceColor(change);
+  const arrow = priceArrow(change);
 
   return {
     type: 'flex',
-    altText: `${symbol} Price`,
+    altText: `${symbol} ราคา`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -27,70 +33,44 @@ function baseFlex(data) {
         contents: [
           {
             type: 'text',
-            text: symbol,
-            size: 'xl',
+            text: name,
             weight: 'bold',
-            color: '#FFFFFF'
+            size: 'lg'
           },
           {
             type: 'text',
-            text: name,
+            text: symbol,
             size: 'sm',
-            color: '#AAAAAA'
-          },
-          {
-            type: 'separator',
-            margin: 'md'
+            color: '#888888'
           },
           {
             type: 'text',
             text: `${price.toLocaleString()} ${currency}`,
             size: 'xxl',
-            weight: 'bold',
-            color: '#FFFFFF'
+            weight: 'bold'
           },
           {
             type: 'text',
-            text: `${arrow} ${Math.abs(change).toLocaleString()} (${up ? '+' : '-'}${Math.abs(percent)}%)`,
+            text: `${arrow} ${change.toFixed(2)} (${percent.toFixed(2)}%)`,
             size: 'md',
+            weight: 'bold',
             color
           },
           {
-            type: 'separator',
-            margin: 'md'
+            type: 'separator'
           },
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              {
-                type: 'text',
-                text: market,
-                size: 'xs',
-                color: '#AAAAAA'
-              },
-              {
-                type: 'text',
-                text: status,
-                size: 'xs',
-                align: 'end',
-                color: '#F1C40F'
-              }
-            ]
+            type: 'text',
+            text: `Market: ${market}`,
+            size: 'sm',
+            color: '#666666'
           }
         ]
-      },
-      styles: {
-        body: {
-          backgroundColor: '#0B0E11'
-        }
       }
     }
   };
 }
 
 module.exports = {
-  buildStockFlex: baseFlex,
-  buildCryptoFlex: baseFlex,
-  buildGoldFlex: baseFlex
+  buildAssetFlex
 };
