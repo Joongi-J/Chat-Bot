@@ -1,44 +1,47 @@
 /* =====================================
    flexBuilder.js
-   Bloomberg / Yahoo Finance Style
-   ▲ ▼ Arrow + Color
+   Bloomberg Style (SAFE VERSION)
 ===================================== */
 
-function buildStockFlex({
-  symbol,
-  current,
-  open,
-  prevClose,
-  marketStatus,
-  lastUpdate
-}) {
-  const cur = Number(current);
-  const pc = Number(prevClose);
-  const op = Number(open);
+function safeText(v, fallback = '-') {
+  if (v === undefined || v === null || v === '') return fallback;
+  return String(v);
+}
 
-  const change = cur - pc;
-  const changePct = pc !== 0 ? ((change / pc) * 100) : 0;
+function num(v, fallback = 0) {
+  const n = Number(v);
+  return isNaN(n) ? fallback : n;
+}
 
-  /* ===== Arrow & Color ===== */
+function buildStockFlex(data = {}) {
+  const symbol = safeText(data.symbol, 'N/A');
+  const current = num(data.current);
+  const open = num(data.open);
+  const prevClose = num(data.prevClose);
+
+  const marketStatus = safeText(data.marketStatus, 'CLOSED');
+  const lastUpdate = data.lastUpdate;
+
+  const change = current - prevClose;
+  const changePct = prevClose !== 0 ? (change / prevClose) * 100 : 0;
+
   const up = change >= 0;
-  const color = up ? '#00B16A' : '#E74C3C';   // Green / Red
+  const color = up ? '#00B16A' : '#E74C3C';
   const arrow = up ? '▲' : '▼';
 
-  const marketColor = marketStatus === 'OPEN'
-    ? '#00B16A'
-    : '#9CA3AF';
+  const marketColor =
+    marketStatus === 'OPEN' ? '#00B16A' : '#9CA3AF';
 
   const timeText = lastUpdate
-    ? new Date(lastUpdate).toLocaleString('en-US', {
+    ? new Date(lastUpdate).toLocaleTimeString('en-US', {
         hour: '2-digit',
-        minute: '2-digit',
-        timeZoneName: 'short'
+        minute: '2-digit'
       })
     : '-';
 
   return {
     type: 'flex',
-    altText: `${symbol} ${cur.toFixed(2)}`,
+    altText: `${symbol} ${current.toFixed(2)}`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -79,10 +82,7 @@ function buildStockFlex({
             color: '#6B7280'
           },
 
-          {
-            type: 'separator',
-            margin: 'md'
-          },
+          { type: 'separator', margin: 'md' },
 
           /* ===== PRICE ===== */
           {
@@ -92,7 +92,7 @@ function buildStockFlex({
             contents: [
               {
                 type: 'text',
-                text: cur.toFixed(2),
+                text: current.toFixed(2),
                 size: 'xxl',
                 weight: 'bold',
                 color: '#111827'
@@ -107,20 +107,16 @@ function buildStockFlex({
             ]
           },
 
-          {
-            type: 'separator',
-            margin: 'lg'
-          },
+          { type: 'separator', margin: 'lg' },
 
           /* ===== DETAILS ===== */
           {
             type: 'box',
             layout: 'vertical',
-            margin: 'lg',
             spacing: 'sm',
             contents: [
-              buildRow('Open', op),
-              buildRow('Prev Close', pc)
+              buildRow('Open', open),
+              buildRow('Prev Close', prevClose)
             ]
           }
         ]
@@ -129,9 +125,6 @@ function buildStockFlex({
   };
 }
 
-/* ===============================
-   Helper Row
-================================ */
 function buildRow(label, value) {
   return {
     type: 'box',
@@ -139,14 +132,14 @@ function buildRow(label, value) {
     contents: [
       {
         type: 'text',
-        text: label,
+        text: safeText(label),
         size: 'sm',
         color: '#6B7280',
         flex: 1
       },
       {
         type: 'text',
-        text: Number(value).toFixed(2),
+        text: num(value).toFixed(2),
         size: 'sm',
         weight: 'bold',
         color: '#111827',
