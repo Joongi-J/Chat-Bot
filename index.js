@@ -196,15 +196,16 @@ app.post('/webhook', async (req, res) => {
       }
 
       setContext(userId, symbol);
+       
+  const flex = buildStockFlex({
+  symbol,
+  current: quote.current,
+  open: quote.open,
+  prevClose: quote.prevClose,
+  marketStatus: quote.marketStatus,   // optional
+  lastUpdate: Date.now()
+});
 
-      const flex = buildStockFlex(
-        symbol,
-        quote.current.toFixed(2),
-        quote.open.toFixed(2),
-        quote.prevClose.toFixed(2),
-        quote.marketStatus,
-        quote.lastUpdate
-      );
 
       await replyLine(event.replyToken, [flex]);
       return res.sendStatus(200);
