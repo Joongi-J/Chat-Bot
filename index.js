@@ -2,10 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 
-const { getTopGainersUS, getSectorRotation, getCryptoHeatmap, getQuote } = require('./marketService');
-const { askSignalZeeker } = require('./aiService');
+const { getQuote, getTopMovers, searchAssets } = require('./marketService');
+const { askAI } = require('./aiService');
 const { getContext, setContext } = require('./contextStore');
-const { buildStockFlex, buildHeatmapFlex } = require('./flexBuilder');
+const { buildPriceFlex } = require('./flexBuilder');
 
 const app = express();
 app.use(express.json());
@@ -13,9 +13,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const LINE_TOKEN = process.env.LINE_TOKEN;
 
-/* ===============================
-   LINE Reply
-================================ */
+/* ===== LINE REPLY ===== */
 async function reply(replyToken, messages) {
   await axios.post(
     'https://api.line.me/v2/bot/message/reply',
@@ -29,9 +27,7 @@ async function reply(replyToken, messages) {
   );
 }
 
-/* ===============================
-   WEBHOOK
-================================ */
+/* ===== WEBHOOK ===== */
 app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
@@ -40,53 +36,47 @@ app.post('/webhook', async (req, res) => {
     const text = event.message.text.trim();
     const userId = event.source.userId;
     const replyToken = event.replyToken;
-
     const context = getContext(userId);
 
-    /* ===== US TOP GAINER ===== */
-    if (/บวกแรง|top gainer/i.test(text)) {
-      const gainers = await getTopGainersUS();
-      const ai = await askSignalZeeker(
-        `หุ้น US บวกแรงวันนี้:\n${gainers.join('\n')}`,
-        context
-      );
-      setContext(userId, 'US_TOP_GAINER');
-      await reply(replyToken, [{ type: 'text', text: ai }]);
-      return res.sendStatus(200);
-    }
-
-    /* ===== SECTOR ROTATION ===== */
-    if (/sector|เงินไหล/i.test(text)) {
-      const sector = await getSectorRotation();
-      const ai = await askSignalZeeker(
-        `ข้อมูล Sector Rotation:\n${sector}`,
-        context
-      );
-      setContext(userId, 'SECTOR');
-      await reply(replyToken, [{ type: 'text', text: ai }]);
-      return res.sendStatus(200);
-    }
-
-    /* ===== CRYPTO HEATMAP ===== */
-    if (/crypto|คริปโต|heatmap/i.test(text)) {
-      const heatmap = await getCryptoHeatmap();
-      const flex = buildHeatmapFlex(heatmap);
-      setContext(userId, 'CRYPTO');
-      await reply(replyToken, [flex]);
-      return res.sendStatus(200);
-    }
-
-    /* ===== SYMBOL ===== */
-    if (/^[A-Z]{1,6}$/.test(text)) {
+    /* === SYMBOL MODE (หุ้น / คริปโต) === */
+    if (/^[A-Z]{2,10}$/.test(text)) {
       const quote = await getQuote(text);
-      const flex = buildStockFlex(text, quote);
-      setContext(userId, 'SYMBOL');
-      await reply(replyToken, [flex]);
+      if (!quote) {
+        await reply(replyToken, [{ type: 'text', text: 'ดึงข้อมูลไม่สำเร็จครับ' }]);
+        return res.sendStatus(200);
+      }
+      setContext(userId, `ดูราคา ${text}`);
+      await reply(replyToken, [buildPriceFlex(text, quote)]);
       return res.sendStatus(200);
     }
 
-    /* ===== AI CHAT (SMART) ===== */
-    const ai = await askSignalZeeker(text, context);
+    /* === TOP MOVER === */
+    if (/บวกแรง|แรงสุด|top/i.test(text)) {
+      const movers = await getTopMovers();
+      const ai = await askAI(
+        `ลิสสินทรัพย์ที่ขยับแรงวันนี้:\n${movers.join('\n')}`,
+        context
+      );
+      setContext(userId, 'ดู top mover');
+      await reply(replyToken, [{ type: 'text', text: ai }]);
+      return res.sendStatus(200);
+    }
+
+    /* === SEARCH / LIST === */
+    if (/ลิส|รายชื่อ|มีอะไรบ้าง/i.test(text)) {
+      const list = await searchAssets(text);
+      const ai = await askAI(
+        `ผู้ใช้ขอรายชื่อ:\n${list.join(', ')}`,
+        context
+      );
+      setContext(userId, 'ขอลิส');
+      await reply(replyToken, [{ type: 'text', text: ai }]);
+      return res.sendStatus(200);
+    }
+
+    /* === GENERAL CHAT === */
+    const ai = await askAI(text, context);
+    setContext(userId, text);
     await reply(replyToken, [{ type: 'text', text: ai }]);
     res.sendStatus(200);
 
@@ -97,5 +87,5 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('🚀 Signal Zeeker GOD MODE running');
+  console.log('🤖 Signal Zeeker running');
 });
