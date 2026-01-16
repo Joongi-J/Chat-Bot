@@ -1,99 +1,71 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-
-const { getQuote, getTopGainersUS } = require('./finnhub');
-const { askAI } = require('./ai');
-const { setContext, getContext } = require('./contextStore');
 const { buildPriceFlex } = require('./flexBuilder');
+const { askAI } = require('./ai');
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const LINE_TOKEN = process.env.LINE_TOKEN;
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
-/* ===============================
-   LINE REPLY
-================================ */
+/* ===== Finnhub ===== */
+async function getQuote(symbol) {
+  const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
+  const res = await axios.get(url);
+  return res.data;
+}
+
+/* ===== LINE Reply ===== */
 async function reply(replyToken, messages) {
-  return axios.post(
+  await axios.post(
     'https://api.line.me/v2/bot/message/reply',
     { replyToken, messages },
-    {
-      headers: {
-        Authorization: `Bearer ${LINE_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    }
+    { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
   );
 }
 
-/* ===============================
-   WEBHOOK
-================================ */
+/* ===== Webhook ===== */
 app.post('/webhook', async (req, res) => {
-  const event = req.body.events?.[0];
-  if (!event || event.type !== 'message') return res.sendStatus(200);
-
-  const userId = event.source.userId;
-  const replyToken = event.replyToken;
-
-  const rawText = event.message.text || '';
-  const text = rawText.trim().toUpperCase();
-  const context = getContext(userId);
-
-  /* ===== SYMBOL DETECTION ===== */
-  const isSymbol = /^[A-Z]{2,10}$/.test(text);
-
-  const CRYPTO_LIST = ['BTC', 'ETH', 'SOL', 'BNB', 'AVAX'];
-  const isCrypto = CRYPTO_LIST.includes(text);
-
-  /* ===== US STOCK PRICE ===== */
-  if (isSymbol && !isCrypto) {
-    const quote = await getQuote(text);
-
-    if (quote && quote.c) {
-      setContext(userId, `ดูราคาหุ้น ${text}`);
-      await reply(replyToken, [buildPriceFlex(text, quote)]);
+  try {
+    const event = req.body.events?.[0];
+    if (!event || event.type !== 'message') {
       return res.sendStatus(200);
     }
 
-    // fallback → AI
-    const ai = await askAI(
-      `ผู้ใช้ถามเกี่ยวกับหุ้น ${text} แต่ไม่สามารถดึงราคา realtime ได้ อธิบายภาพรวมแทน`,
-      context
-    );
-    await reply(replyToken, [{ type: 'text', text: ai }]);
-    return res.sendStatus(200);
+    const text = event.message.text.trim();
+    const upper = text.toUpperCase();
+
+    /* === 1. ถ้าเป็น SYMBOL === */
+    if (/^[A-Z]{2,6}$/.test(upper)) {
+      const q = await getQuote(upper);
+
+      if (q && q.c && q.c !== 0) {
+        const flex = buildPriceFlex(upper, q);
+        await reply(event.replyToken, [flex]);
+        return res.sendStatus(200);
+      }
+
+      await reply(event.replyToken, [
+        { type: 'text', text: `ไม่พบราคาปัจจุบันของ ${upper} ครับ` }
+      ]);
+      return res.sendStatus(200);
+    }
+
+    /* === 2. อื่น ๆ ใช้ AI === */
+    const aiText = await askAI(text);
+    await reply(event.replyToken, [{ type: 'text', text: aiText }]);
+
+    res.sendStatus(200);
+  } catch (e) {
+    console.error('Webhook ERROR:', e.message);
+    res.sendStatus(500);
   }
-
-  /* ===== CRYPTO MODE ===== */
-  if (isCrypto) {
-    const ai = await askAI(
-      `ผู้ใช้ถามเกี่ยวกับคริปโต ${text} อธิบายสถานะตลาด แนวโน้ม และสิ่งที่นักลงทุนกำลังจับตา (ไม่ต้องให้ราคา)`,
-      context
-    );
-    setContext(userId, `ถามคริปโต ${text}`);
-    await reply(replyToken, [{ type: 'text', text: ai }]);
-    return res.sendStatus(200);
-  }
-
-  /* ===== TOP GAINER ===== */
-  if (text.includes('บวกแรง') || text.includes('TOP GAINER')) {
-    const list = await getTopGainersUS();
-    await reply(replyToken, [{ type: 'text', text: list }]);
-    return res.sendStatus(200);
-  }
-
-  /* ===== GENERAL AI CHAT ===== */
-  const ai = await askAI(rawText, context);
-  setContext(userId, rawText);
-  await reply(replyToken, [{ type: 'text', text: ai }]);
-
-  res.sendStatus(200);
 });
 
+/* ===== Server ===== */
 app.listen(PORT, () => {
-  console.log(`🤖 Signal Zeeker running on ${PORT}`);
+  console.log(`🚀 Signal Zeeker Bot running on port ${PORT}`);
 });
