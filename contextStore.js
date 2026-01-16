@@ -1,11 +1,11 @@
-const store = {};
+const store = new Map();
+
+function setContext(userId, text) {
+  store.set(userId, text);
+}
 
 function getContext(userId) {
-  return store[userId] || 'เริ่มคุย';
+  return store.get(userId) || '';
 }
 
-function setContext(userId, value) {
-  store[userId] = value;
-}
-
-module.exports = { getContext, setContext };
+module.exports = { setContext, getContext };
