@@ -12,43 +12,45 @@ const LINE_TOKEN = process.env.LINE_TOKEN;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* ===============================
-   SYSTEM PROMPT
+   SYSTEM PROMPT (SMARTER)
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI นักวิเคราะห์ตลาดของเพจ Signal Zeeker
 คุณเป็นผู้ชาย ใช้คำว่า "ผม" และลงท้ายทุกข้อความด้วย "ครับ"
-ตอบแบบ dynamic ไม่ fix
-ถ้าไม่มีข้อมูลจริงให้บอกตรง ๆ
-โครงสร้างคำตอบ:
+
+ข้อจำกัดสำคัญ:
+- คุณไม่ให้คำแนะนำการลงทุน
+- คุณนำเสนอข้อมูลเชิงวิเคราะห์และตัวอย่างเท่านั้น
+- หากข้อมูลไม่ชัดเจน ให้บอกตรง ๆ ว่าไม่ทราบ
+
+กรณีคำถาม:
+1) ถ้าถามนอกเรื่องการเงิน → ตอบสุภาพ กระชับ
+2) ถ้าขอรายชื่อหุ้น → ย้ำว่าเป็นเพียงตัวอย่าง ไม่ใช่คำแนะนำ
+3) ถ้าข้อมูลเป็น Real-time ไม่ครบ → แจ้งข้อจำกัด
+
+โครงสร้างคำตอบหุ้น:
 📊 ภาพรวม
 🧠 ปัจจัยสำคัญ
 ⚠️ ความเสี่ยง
 📈 มุมมองตลาด
-📌 สรุปเชิงวิเคราะห์
+📌 สรุปเชิงวิเคราะห์ (พร้อม Disclaimer)
 `;
 
 /* ===============================
-   Helper : Split LINE Message
+   Helper
 ================================ */
 function splitForLine(text, maxLen = 900) {
   const messages = [];
-  const paragraphs = text
-    .split(/\n{2,}/)
-    .map(p => p.trim())
-    .filter(Boolean);
+  const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
 
   for (const p of paragraphs) {
     if (messages.length >= 5) break;
-
     if (p.length <= maxLen) {
       messages.push({ type: 'text', text: p });
     } else {
       let start = 0;
       while (start < p.length && messages.length < 5) {
-        messages.push({
-          type: 'text',
-          text: p.substring(start, start + maxLen)
-        });
+        messages.push({ type: 'text', text: p.substring(start, start + maxLen) });
         start += maxLen;
       }
     }
@@ -57,38 +59,45 @@ function splitForLine(text, maxLen = 900) {
 }
 
 /* ===============================
-   Finnhub : Realtime Price
+   Finnhub
 ================================ */
 async function getStockPrice(symbol) {
   try {
     const res = await axios.get(
       'https://finnhub.io/api/v1/quote',
-      {
-        params: {
-          symbol,
-          token: FINNHUB_API_KEY
-        }
-      }
+      { params: { symbol, token: FINNHUB_API_KEY } }
+    );
+    if (!res.data || !res.data.c) return null;
+    return res.data;
+  } catch {
+    return null;
+  }
+}
+
+/* ===============================
+   Finnhub : Top Gainers (US)
+================================ */
+async function getTopGainers() {
+  try {
+    const res = await axios.get(
+      'https://finnhub.io/api/v1/stock/symbol',
+      { params: { exchange: 'US', token: FINNHUB_API_KEY } }
     );
 
-    const d = res.data;
+    const symbols = res.data.slice(0, 30);
+    const results = [];
 
-    // c = current price
-    if (!d || !d.c || d.c === 0) return null;
+    for (const s of symbols) {
+      const q = await getStockPrice(s.symbol);
+      if (!q || !q.pc) continue;
 
-    return {
-      symbol,
-      current: d.c,
-      prevClose: d.pc,
-      open: d.o,
-      high: d.h,
-      low: d.l,
-      timestamp: d.t
-    };
+      const pct = ((q.c - q.pc) / q.pc) * 100;
+      results.push({ symbol: s.symbol, pct });
+    }
 
-  } catch (err) {
-    console.error('Finnhub ERROR:', err.message);
-    return null;
+    return results.sort((a, b) => b.pct - a.pct).slice(0, 5);
+  } catch {
+    return [];
   }
 }
 
@@ -108,18 +117,10 @@ async function askOpenAI(prompt) {
         temperature: 0.7,
         max_tokens: 1200
       },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
+      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
-
     return res.data.choices[0].message.content;
-
-  } catch (err) {
-    console.error('OpenAI ERROR:', err.message);
+  } catch {
     return '📌 ผมไม่สามารถประมวลผลคำตอบได้ในขณะนี้ครับ';
   }
 }
@@ -128,85 +129,83 @@ async function askOpenAI(prompt) {
    LINE Webhook
 ================================ */
 app.post('/webhook', async (req, res) => {
-  try {
-    const event = req.body.events?.[0];
-    if (!event || event.type !== 'message') {
-      return res.sendStatus(200);
-    }
+  const event = req.body.events?.[0];
+  if (!event || event.type !== 'message') return res.sendStatus(200);
 
-    const userText = event.message.text.trim();
-    const replyToken = event.replyToken;
+  const text = event.message.text.trim();
+  const replyToken = event.replyToken;
 
-    // หุ้น US (AAPL, TSLA, NVDA)
-    const isSymbol = /^[A-Za-z]{1,6}$/.test(userText);
+  const isSymbol = /^[A-Za-z]{1,6}$/.test(text);
+  const isTopGainer =
+    /บวก|ขึ้น|แรงสุด|gainer|top/i.test(text);
 
-    /* ===============================
-       SYMBOL → FLEX PRICE
-    ================================ */
-    if (isSymbol) {
-      const symbol = userText.toUpperCase();
-      const priceData = await getStockPrice(symbol);
+  /* ===============================
+     SYMBOL
+  ================================ */
+  if (isSymbol) {
+    const symbol = text.toUpperCase();
+    const q = await getStockPrice(symbol);
 
-      if (!priceData) {
-        await axios.post(
-          'https://api.line.me/v2/bot/message/reply',
-          {
-            replyToken,
-            messages: [{
-              type: 'text',
-              text: `📌 ผมไม่สามารถดึงราคาปัจจุบันของ ${symbol} ได้ครับ`
-            }]
-          },
-          {
-            headers: { Authorization: `Bearer ${LINE_TOKEN}` }
-          }
-        );
-        return res.sendStatus(200);
-      }
-
-      // แนวรับ / แนวต้าน (placeholder — ต่อ AI ได้ภายหลัง)
-      const support = '-';
-      const resistance = '-';
-
-      const flex = buildStockFlex(symbol, priceData, support, resistance);
-
-      await axios.post(
-        'https://api.line.me/v2/bot/message/reply',
-        {
-          replyToken,
-          messages: [flex]
-        },
-        {
-          headers: { Authorization: `Bearer ${LINE_TOKEN}` }
-        }
-      );
-
-      return res.sendStatus(200);
-    }
-
-    /* ===============================
-       TEXT → AI ANALYSIS
-    ================================ */
-    const aiText = await askOpenAI(userText);
-    const messages = splitForLine(aiText);
-
-    await axios.post(
-      'https://api.line.me/v2/bot/message/reply',
-      {
+    if (!q) {
+      await axios.post('https://api.line.me/v2/bot/message/reply', {
         replyToken,
-        messages
-      },
-      {
-        headers: { Authorization: `Bearer ${LINE_TOKEN}` }
-      }
-    );
+        messages: [{ type: 'text', text: `ไม่พบข้อมูล ${symbol} ครับ` }]
+      }, { headers: { Authorization: `Bearer ${LINE_TOKEN}` } });
+      return res.sendStatus(200);
+    }
 
-    res.sendStatus(200);
+    const flex = buildStockFlex(symbol, {
+      current: q.c,
+      prevClose: q.pc,
+      open: q.o,
+      high: q.h,
+      low: q.l
+    });
 
-  } catch (err) {
-    console.error('Webhook ERROR:', err.message);
-    res.sendStatus(500);
+    await axios.post('https://api.line.me/v2/bot/message/reply', {
+      replyToken,
+      messages: [flex]
+    }, { headers: { Authorization: `Bearer ${LINE_TOKEN}` } });
+
+    return res.sendStatus(200);
   }
+
+  /* ===============================
+     TOP GAINERS
+  ================================ */
+  if (isTopGainer) {
+    const gainers = await getTopGainers();
+    const textMsg = gainers.length
+      ? gainers.map((g, i) => `${i + 1}. ${g.symbol} +${g.pct.toFixed(2)}%`).join('\n')
+      : 'ไม่สามารถดึงข้อมูลได้ครับ';
+
+    await axios.post('https://api.line.me/v2/bot/message/reply', {
+      replyToken,
+      messages: [{
+        type: 'text',
+        text:
+`📈 หุ้นที่บวกแรงวันนี้ (US)
+${textMsg}
+
+📌 ข้อมูลนี้เป็นเพียงการนำเสนอข้อมูล ไม่ใช่คำแนะนำการลงทุนครับ`
+      }]
+    }, { headers: { Authorization: `Bearer ${LINE_TOKEN}` } });
+
+    return res.sendStatus(200);
+  }
+
+  /* ===============================
+     AI GENERAL
+  ================================ */
+  const aiText = await askOpenAI(text);
+  const messages = splitForLine(aiText);
+
+  await axios.post('https://api.line.me/v2/bot/message/reply', {
+    replyToken,
+    messages
+  }, { headers: { Authorization: `Bearer ${LINE_TOKEN}` } });
+
+  res.sendStatus(200);
 });
 
 /* ===============================
