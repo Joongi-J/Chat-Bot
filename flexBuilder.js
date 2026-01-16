@@ -1,33 +1,97 @@
 // flexBuilder.js
-function buildStockFlex(symbol, price, support, resistance) {
+function buildStockFlex(symbol, priceData, support = '-', resistance = '-') {
+  const {
+    current,
+    prevClose
+  } = priceData;
+
+  const change = current - prevClose;
+  const changePct = ((change / prevClose) * 100).toFixed(2);
+
+  const isUp = change >= 0;
+  const arrow = isUp ? '▲' : '▼';
+  const color = isUp ? '#1DB446' : '#D93025';
+
   return {
     type: 'flex',
-    altText: `${symbol} ราคา ${price}`,
+    altText: `${symbol} ${current} USD`,
     contents: {
       type: 'bubble',
+      size: 'mega',
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
         contents: [
-          { type: 'text', text: symbol, weight: 'bold', size: 'xl', color: '#1DB446' },
-          { type: 'text', text: `ราคา ${price} USD`, size: 'lg', margin: 'md' },
+          /* SYMBOL */
+          {
+            type: 'text',
+            text: symbol,
+            weight: 'bold',
+            size: 'xl',
+            color: '#111111'
+          },
+
+          /* PRICE */
+          {
+            type: 'text',
+            text: `${current.toFixed(2)} USD`,
+            size: 'xxl',
+            weight: 'bold',
+            color
+          },
+
+          /* CHANGE */
+          {
+            type: 'text',
+            text: `${arrow} ${change.toFixed(2)} (${changePct}%)`,
+            size: 'md',
+            color
+          },
+
+          /* DIVIDER */
+          {
+            type: 'separator',
+            margin: 'md'
+          },
+
+          /* SUPPORT / RESISTANCE */
           {
             type: 'box',
             layout: 'horizontal',
             spacing: 'sm',
+            margin: 'md',
             contents: [
-              { type: 'text', text: `แนวรับ: ${support}`, size: 'sm', color: '#00AA00', flex: 1 },
-              { type: 'text', text: `แนวต้าน: ${resistance}`, size: 'sm', color: '#FF0000', flex: 1 }
+              {
+                type: 'box',
+                layout: 'vertical',
+                contents: [
+                  { type: 'text', text: 'แนวรับ', size: 'xs', color: '#888888' },
+                  { type: 'text', text: support, size: 'sm', weight: 'bold', color: '#1DB446' }
+                ],
+                flex: 1
+              },
+              {
+                type: 'box',
+                layout: 'vertical',
+                contents: [
+                  { type: 'text', text: 'แนวต้าน', size: 'xs', color: '#888888' },
+                  { type: 'text', text: resistance, size: 'sm', weight: 'bold', color: '#D93025' }
+                ],
+                flex: 1
+              }
             ]
           },
+
+          /* BUTTON */
           {
             type: 'button',
             style: 'primary',
-            margin: 'md',
+            margin: 'lg',
+            color: '#111111',
             action: {
               type: 'message',
-              label: 'ดูบทวิเคราะห์',
+              label: '📊 ดูบทวิเคราะห์',
               text: `วิเคราะห์ ${symbol}`
             }
           }
