@@ -2,9 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 
-const { getQuote, getTopMovers, searchAssets } = require('./marketService');
-const { askAI } = require('./aiService');
-const { getContext, setContext } = require('./contextStore');
+const { getQuote, getTopGainersUS } = require('./finnhub');
+const { askAI } = require('./ai');
+const { setContext, getContext } = require('./contextStore');
 const { buildPriceFlex } = require('./flexBuilder');
 
 const app = express();
@@ -13,9 +13,11 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const LINE_TOKEN = process.env.LINE_TOKEN;
 
-/* ===== LINE REPLY ===== */
+/* ===============================
+   LINE REPLY
+================================ */
 async function reply(replyToken, messages) {
-  await axios.post(
+  return axios.post(
     'https://api.line.me/v2/bot/message/reply',
     { replyToken, messages },
     {
@@ -27,65 +29,71 @@ async function reply(replyToken, messages) {
   );
 }
 
-/* ===== WEBHOOK ===== */
+/* ===============================
+   WEBHOOK
+================================ */
 app.post('/webhook', async (req, res) => {
-  try {
-    const event = req.body.events?.[0];
-    if (!event || event.type !== 'message') return res.sendStatus(200);
+  const event = req.body.events?.[0];
+  if (!event || event.type !== 'message') return res.sendStatus(200);
 
-    const text = event.message.text.trim();
-    const userId = event.source.userId;
-    const replyToken = event.replyToken;
-    const context = getContext(userId);
+  const userId = event.source.userId;
+  const replyToken = event.replyToken;
 
-    /* === SYMBOL MODE (หุ้น / คริปโต) === */
-    if (/^[A-Z]{2,10}$/.test(text)) {
-      const quote = await getQuote(text);
-      if (!quote) {
-        await reply(replyToken, [{ type: 'text', text: 'ดึงข้อมูลไม่สำเร็จครับ' }]);
-        return res.sendStatus(200);
-      }
-      setContext(userId, `ดูราคา ${text}`);
+  const rawText = event.message.text || '';
+  const text = rawText.trim().toUpperCase();
+  const context = getContext(userId);
+
+  /* ===== SYMBOL DETECTION ===== */
+  const isSymbol = /^[A-Z]{2,10}$/.test(text);
+
+  const CRYPTO_LIST = ['BTC', 'ETH', 'SOL', 'BNB', 'AVAX'];
+  const isCrypto = CRYPTO_LIST.includes(text);
+
+  /* ===== US STOCK PRICE ===== */
+  if (isSymbol && !isCrypto) {
+    const quote = await getQuote(text);
+
+    if (quote && quote.c) {
+      setContext(userId, `ดูราคาหุ้น ${text}`);
       await reply(replyToken, [buildPriceFlex(text, quote)]);
       return res.sendStatus(200);
     }
 
-    /* === TOP MOVER === */
-    if (/บวกแรง|แรงสุด|top/i.test(text)) {
-      const movers = await getTopMovers();
-      const ai = await askAI(
-        `ลิสสินทรัพย์ที่ขยับแรงวันนี้:\n${movers.join('\n')}`,
-        context
-      );
-      setContext(userId, 'ดู top mover');
-      await reply(replyToken, [{ type: 'text', text: ai }]);
-      return res.sendStatus(200);
-    }
-
-    /* === SEARCH / LIST === */
-    if (/ลิส|รายชื่อ|มีอะไรบ้าง/i.test(text)) {
-      const list = await searchAssets(text);
-      const ai = await askAI(
-        `ผู้ใช้ขอรายชื่อ:\n${list.join(', ')}`,
-        context
-      );
-      setContext(userId, 'ขอลิส');
-      await reply(replyToken, [{ type: 'text', text: ai }]);
-      return res.sendStatus(200);
-    }
-
-    /* === GENERAL CHAT === */
-    const ai = await askAI(text, context);
-    setContext(userId, text);
+    // fallback → AI
+    const ai = await askAI(
+      `ผู้ใช้ถามเกี่ยวกับหุ้น ${text} แต่ไม่สามารถดึงราคา realtime ได้ อธิบายภาพรวมแทน`,
+      context
+    );
     await reply(replyToken, [{ type: 'text', text: ai }]);
-    res.sendStatus(200);
-
-  } catch (err) {
-    console.error(err.message);
-    res.sendStatus(500);
+    return res.sendStatus(200);
   }
+
+  /* ===== CRYPTO MODE ===== */
+  if (isCrypto) {
+    const ai = await askAI(
+      `ผู้ใช้ถามเกี่ยวกับคริปโต ${text} อธิบายสถานะตลาด แนวโน้ม และสิ่งที่นักลงทุนกำลังจับตา (ไม่ต้องให้ราคา)`,
+      context
+    );
+    setContext(userId, `ถามคริปโต ${text}`);
+    await reply(replyToken, [{ type: 'text', text: ai }]);
+    return res.sendStatus(200);
+  }
+
+  /* ===== TOP GAINER ===== */
+  if (text.includes('บวกแรง') || text.includes('TOP GAINER')) {
+    const list = await getTopGainersUS();
+    await reply(replyToken, [{ type: 'text', text: list }]);
+    return res.sendStatus(200);
+  }
+
+  /* ===== GENERAL AI CHAT ===== */
+  const ai = await askAI(rawText, context);
+  setContext(userId, rawText);
+  await reply(replyToken, [{ type: 'text', text: ai }]);
+
+  res.sendStatus(200);
 });
 
 app.listen(PORT, () => {
-  console.log('🤖 Signal Zeeker running');
+  console.log(`🤖 Signal Zeeker running on ${PORT}`);
 });
