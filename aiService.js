@@ -1,16 +1,21 @@
 const axios = require('axios');
 const OPENAI = process.env.OPENAI_API_KEY;
 
-async function askSignalZeeker(text, context) {
+async function askAI(text, context) {
   const prompt = `
-คุณคือ Signal Zeeker
-- วิเคราะห์เชิงเงินไหล / เกมตลาด
-- ไม่ให้คำแนะนำการลงทุน
-- ใช้คำว่า "ผม" ลงท้าย "ครับ"
+คุณคือคนที่คุยเรื่องหุ้นและคริปโตเก่ง
+พูดเหมือนคนจริง ไม่ใช้ศัพท์เว่อร์
 
-Context ผู้ใช้ก่อนหน้า: ${context}
+กติกา:
+- ถามหุ้น / คริปโต / ลิสต์ → ตอบได้
+- ถาม "ควรซื้อไหม" → อธิบายความน่าจะเป็น + สิ่งที่ต้องพิจารณา
+- ไม่ฟันธง ไม่เชียร์
+- ใช้คำว่า "ผม" และลงท้าย "ครับ"
 
-ข้อมูล:
+บริบทก่อนหน้า:
+${context}
+
+ข้อความ:
 ${text}
 `;
 
@@ -19,7 +24,7 @@ ${text}
     {
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
-      temperature: 0.4
+      temperature: 0.7
     },
     {
       headers: {
@@ -32,4 +37,4 @@ ${text}
   return res.data.choices[0].message.content;
 }
 
-module.exports = { askSignalZeeker };
+module.exports = { askAI };
