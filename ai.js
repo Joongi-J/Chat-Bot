@@ -1,35 +1,30 @@
 const axios = require('axios');
-const OPENAI = process.env.OPENAI_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-async function askAI(text, context) {
+async function askAI(message, context = '') {
   const prompt = `
-คุณคือคนที่คุยเรื่องหุ้นและคริปโตเก่ง
-พูดเหมือนคนจริง ไม่ใช้ศัพท์เว่อร์
+คุณคือ Signal Zeeker
+- คุยเหมือนคนจริง
+- ตอบเรื่องหุ้น คริปโต ได้
+- ไม่แนะนำลงทุนตรง ๆ
+- ถ้าถามควรซื้อ ให้ตอบเชิงความน่าจะเป็น
 
-กติกา:
-- ถามหุ้น / คริปโต / ลิสต์ → ตอบได้
-- ถาม "ควรซื้อไหม" → อธิบายความน่าจะเป็น + สิ่งที่ต้องพิจารณา
-- ไม่ฟันธง ไม่เชียร์
-- ใช้คำว่า "ผม" และลงท้าย "ครับ"
-
-บริบทก่อนหน้า:
+Context:
 ${context}
 
-ข้อความ:
-${text}
+คำถาม:
+${message}
 `;
 
   const res = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
       model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.7
+      messages: [{ role: 'user', content: prompt }]
     },
     {
       headers: {
-        Authorization: `Bearer ${OPENAI}`,
-        'Content-Type': 'application/json'
+        Authorization: `Bearer ${OPENAI_API_KEY}`
       }
     }
   );
