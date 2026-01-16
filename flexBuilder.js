@@ -1,91 +1,35 @@
-function buildAssetFlex(data) {
-  // trend / bias
-  let trend = 'กลาง'; // default
-  if (data.percent > 1) trend = 'ขาขึ้น 📈';
-  else if (data.percent < -1) trend = 'ขาลง 📉';
-
-  // สีสำหรับเปลี่ยนตาม trend
-  const color =
-    data.percent > 0.5
-      ? '#0f9d58' // เขียว
-      : data.percent < -0.5
-      ? '#db4437' // แดง
-      : '#f4b400'; // เหลือง
-
+// flexBuilder.js
+function buildStockFlex(symbol, price, support, resistance) {
   return {
     type: 'flex',
-    altText: `${data.name} - ${data.price} ${data.currency} (${data.percent.toFixed(
-      2
-    )}%)`,
+    altText: `${symbol} ราคา ${price}`,
     contents: {
       type: 'bubble',
-      size: 'mega',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        contents: [
-          {
-            type: 'text',
-            text: `${data.name} (${data.symbol})`,
-            weight: 'bold',
-            size: 'lg',
-            color: '#ffffff'
-          }
-        ],
-        backgroundColor: '#1e1e1e',
-        paddingAll: '12px'
-      },
       body: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'sm',
+        spacing: 'md',
         contents: [
+          { type: 'text', text: symbol, weight: 'bold', size: 'xl', color: '#1DB446' },
+          { type: 'text', text: `ราคา ${price} USD`, size: 'lg', margin: 'md' },
           {
             type: 'box',
-            layout: 'baseline',
+            layout: 'horizontal',
+            spacing: 'sm',
             contents: [
-              { type: 'text', text: 'ราคา', size: 'sm', color: '#aaaaaa' },
-              {
-                type: 'text',
-                text: `${data.price} ${data.currency}`,
-                size: 'sm',
-                color: '#ffffff',
-                margin: 'md',
-                flex: 1
-              }
+              { type: 'text', text: `แนวรับ: ${support}`, size: 'sm', color: '#00AA00', flex: 1 },
+              { type: 'text', text: `แนวต้าน: ${resistance}`, size: 'sm', color: '#FF0000', flex: 1 }
             ]
           },
           {
-            type: 'box',
-            layout: 'baseline',
-            contents: [
-              { type: 'text', text: 'Change', size: 'sm', color: '#aaaaaa' },
-              {
-                type: 'text',
-                text: `${data.change >= 0 ? '+' : ''}${data.change.toFixed(
-                  2
-                )} (${data.percent.toFixed(2)}%)`,
-                size: 'sm',
-                color,
-                margin: 'md',
-                flex: 1
-              }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'baseline',
-            contents: [
-              { type: 'text', text: 'Trend/Bias', size: 'sm', color: '#aaaaaa' },
-              {
-                type: 'text',
-                text: trend,
-                size: 'sm',
-                color: color,
-                margin: 'md',
-                flex: 1
-              }
-            ]
+            type: 'button',
+            style: 'primary',
+            margin: 'md',
+            action: {
+              type: 'message',
+              label: 'ดูบทวิเคราะห์',
+              text: `วิเคราะห์ ${symbol}`
+            }
           }
         ]
       }
@@ -93,4 +37,4 @@ function buildAssetFlex(data) {
   };
 }
 
-module.exports = { buildAssetFlex };
+module.exports = { buildStockFlex };
