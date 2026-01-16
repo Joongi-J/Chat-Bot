@@ -28,20 +28,27 @@ const SYSTEM_PROMPT = `
 `;
 
 /* ===============================
-   Helper
+   Helper : Split LINE Message
 ================================ */
 function splitForLine(text, maxLen = 900) {
   const messages = [];
-  const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map(p => p.trim())
+    .filter(Boolean);
 
   for (const p of paragraphs) {
     if (messages.length >= 5) break;
+
     if (p.length <= maxLen) {
       messages.push({ type: 'text', text: p });
     } else {
       let start = 0;
       while (start < p.length && messages.length < 5) {
-        messages.push({ type: 'text', text: p.substring(start, start + maxLen) });
+        messages.push({
+          type: 'text',
+          text: p.substring(start, start + maxLen)
+        });
         start += maxLen;
       }
     }
@@ -50,13 +57,35 @@ function splitForLine(text, maxLen = 900) {
 }
 
 /* ===============================
-   Finnhub
+   Finnhub : Realtime Price
 ================================ */
 async function getStockPrice(symbol) {
   try {
-    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
-    const res = await axios.get(url);
-    return res.data;
+    const res = await axios.get(
+      'https://finnhub.io/api/v1/quote',
+      {
+        params: {
+          symbol,
+          token: FINNHUB_API_KEY
+        }
+      }
+    );
+
+    const d = res.data;
+
+    // c = current price
+    if (!d || !d.c || d.c === 0) return null;
+
+    return {
+      symbol,
+      current: d.c,
+      prevClose: d.pc,
+      open: d.o,
+      high: d.h,
+      low: d.l,
+      timestamp: d.t
+    };
+
   } catch (err) {
     console.error('Finnhub ERROR:', err.message);
     return null;
@@ -76,8 +105,8 @@ async function askOpenAI(prompt) {
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: prompt }
         ],
-        max_tokens: 1200,
-        temperature: 0.7
+        temperature: 0.7,
+        max_tokens: 1200
       },
       {
         headers: {
@@ -86,7 +115,9 @@ async function askOpenAI(prompt) {
         }
       }
     );
+
     return res.data.choices[0].message.content;
+
   } catch (err) {
     console.error('OpenAI ERROR:', err.message);
     return '📌 ผมไม่สามารถประมวลผลคำตอบได้ในขณะนี้ครับ';
@@ -99,55 +130,79 @@ async function askOpenAI(prompt) {
 app.post('/webhook', async (req, res) => {
   try {
     const event = req.body.events?.[0];
-    if (!event || event.type !== 'message') return res.sendStatus(200);
+    if (!event || event.type !== 'message') {
+      return res.sendStatus(200);
+    }
 
     const userText = event.message.text.trim();
-    const userId = event.source.userId;
+    const replyToken = event.replyToken;
+
+    // หุ้น US (AAPL, TSLA, NVDA)
     const isSymbol = /^[A-Za-z]{1,6}$/.test(userText);
 
+    /* ===============================
+       SYMBOL → FLEX PRICE
+    ================================ */
     if (isSymbol) {
       const symbol = userText.toUpperCase();
-      const price = await getStockPrice(symbol);
+      const priceData = await getStockPrice(symbol);
 
-      if (!price) {
+      if (!priceData) {
         await axios.post(
           'https://api.line.me/v2/bot/message/reply',
           {
-            replyToken: event.replyToken,
-            messages: [{ type: 'text', text: `📌 ผมไม่สามารถดึงข้อมูลหุ้น ${symbol} ได้ครับ` }]
+            replyToken,
+            messages: [{
+              type: 'text',
+              text: `📌 ผมไม่สามารถดึงราคาปัจจุบันของ ${symbol} ได้ครับ`
+            }]
           },
-          { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
+          {
+            headers: { Authorization: `Bearer ${LINE_TOKEN}` }
+          }
         );
         return res.sendStatus(200);
       }
 
-      const flex = buildStockFlex(symbol, price);
+      // แนวรับ / แนวต้าน (placeholder — ต่อ AI ได้ภายหลัง)
+      const support = '-';
+      const resistance = '-';
+
+      const flex = buildStockFlex(symbol, priceData, support, resistance);
+
       await axios.post(
         'https://api.line.me/v2/bot/message/reply',
         {
-          replyToken: event.replyToken,
+          replyToken,
           messages: [flex]
         },
-        { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
+        {
+          headers: { Authorization: `Bearer ${LINE_TOKEN}` }
+        }
       );
 
       return res.sendStatus(200);
     }
 
-    // ถ้าไม่ใช่ symbol → วิเคราะห์ด้วย AI
+    /* ===============================
+       TEXT → AI ANALYSIS
+    ================================ */
     const aiText = await askOpenAI(userText);
     const messages = splitForLine(aiText);
 
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       {
-        replyToken: event.replyToken,
+        replyToken,
         messages
       },
-      { headers: { Authorization: `Bearer ${LINE_TOKEN}` } }
+      {
+        headers: { Authorization: `Bearer ${LINE_TOKEN}` }
+      }
     );
 
     res.sendStatus(200);
+
   } catch (err) {
     console.error('Webhook ERROR:', err.message);
     res.sendStatus(500);
