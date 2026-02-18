@@ -11,7 +11,7 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 /* ===============================
-   FINNHUB QUOTE
+   FINNHUB STOCK
 ================================ */
 async function getQuote(symbol) {
   const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
@@ -20,7 +20,16 @@ async function getQuote(symbol) {
 }
 
 /* ===============================
-   FLEX MESSAGE BUILDER
+   FINNHUB CRYPTO
+================================ */
+async function getCryptoQuote(symbol) {
+  const url = `https://finnhub.io/api/v1/crypto/quote?symbol=BINANCE:${symbol}&token=${FINNHUB_API_KEY}`;
+  const res = await axios.get(url);
+  return res.data;
+}
+
+/* ===============================
+   FLEX BUILDER
 ================================ */
 function buildPriceFlex(symbol, q) {
   const change = q.d || 0;
@@ -65,84 +74,38 @@ function buildPriceFlex(symbol, q) {
 }
 
 /* ===============================
-   SYSTEM PROMPT - SIGNAL ZEEKER PRO
+   SYSTEM PROMPT
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI นักวิเคราะห์ตลาดสไตล์เพจ Signal Zeeker
 
-บุคลิก:
+- ต้องใช้ข้อมูลล่าสุดจากการค้นหาเว็บก่อนตอบ
 - วิเคราะห์แบบมืออาชีพ
 - กระชับ ชัด เห็นเกมเงินไหล
 - ไม่สอนพื้นฐาน
-- ไม่พูดกว้าง
-- ไม่ใช้คำว่า "โดยทั่วไป"
-- ไม่เขียนแบบบทความวิชาการ
-- ไม่โลกสวย
+- ไม่เยิ่นเย้อ
 - ลงท้ายด้วยครับ
-
-รูปแบบการตอบ:
-
-1) ถ้าถามภาพรวมตลาด / ตลาดวันนี้
-ตอบ 4 ส่วนเสมอ:
-
-[ภาพรวมตลาด]
-สรุปสั้น 2-3 บรรทัด
-
-[ปัจจัยขับเคลื่อน]
-ข่าว/ตัวเลข/บอนด์ยีลด์/ดอลลาร์/ภูมิรัฐศาสตร์
-
-[เงินไหลไปไหน]
-sector หรือ asset เด่น
-
-[สิ่งที่ต้องจับตา]
-เหตุการณ์ถัดไปที่อาจเปลี่ยนทิศตลาด
-
-2) ถ้าถามปฏิทินเศรษฐกิจ
-
-[เหตุการณ์สำคัญ]
-- ชื่อเหตุการณ์ + เวลา
-
-[ถ้าออกมาสูงกว่าคาด]
-→ กระทบอะไร
-
-[ถ้าออกมาต่ำกว่าคาด]
-→ กระทบอะไร
-
-3) ถ้าถามควรซื้อไหม
-- ห้ามฟันธง
-- ตอบเชิงความน่าจะเป็น
-- บอกความเสี่ยงหลัก
-
-4) ถ้าถามหุ้นรายตัว
-
-[แนวโน้ม]
-[ปัจจัยบวก]
-[ความเสี่ยง]
-[มุมมองความน่าจะเป็น]
-
-ข้อห้าม:
-- ห้ามตอบแบบบทเรียน
-- ห้ามเยิ่นเย้อ
-- ถ้าไม่มีปัจจัยใหม่ ให้บอกว่ายังไม่มีปัจจัยใหม่ชัดเจน
-
-เขียนเหมือนกำลังสรุปให้เทรดเดอร์มืออาชีพอ่านทุกเช้าครับ
 `;
 
 /* ===============================
-   OPENAI
+   OPENAI (WEB SEARCH ENABLED)
 ================================ */
 async function askAI(userText) {
   const res = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
+    'https://api.openai.com/v1/responses',
     {
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userText }
-      ],
-      temperature: 0.4,
-      top_p: 0.9,
-      max_tokens: 700
+      model: 'gpt-4.1-mini',
+      tools: [{ type: "web_search" }],
+      input: [
+        {
+          role: "system",
+          content: SYSTEM_PROMPT
+        },
+        {
+          role: "user",
+          content: userText
+        }
+      ]
     },
     {
       headers: {
@@ -152,7 +115,7 @@ async function askAI(userText) {
     }
   );
 
-  return res.data.choices[0].message.content;
+  return res.data.output_text;
 }
 
 /* ===============================
@@ -183,35 +146,50 @@ app.post('/webhook', async (req, res) => {
 
     if (event.message.type !== 'text') {
       await reply(event.replyToken, [
-        { type: 'text', text: 'พิมพ์ชื่อหุ้น US เช่น AAPL, NVDA, TSLA ได้เลยครับ' }
+        { type: 'text', text: 'พิมพ์ชื่อหุ้นหรือคริปโต เช่น AAPL, NVDA, BTCUSDT ได้เลยครับ' }
       ]);
       return res.sendStatus(200);
     }
 
-    const raw = event.message.text;
-    const text = raw.replace(/[^a-zA-Z]/g, '').toUpperCase();
+    const raw = event.message.text.trim();
+    let text = raw.toUpperCase();
 
-    console.log('USER:', raw, '→', text);
+    console.log('USER:', raw);
 
     /* ===============================
-       PRICE MODE
+       CRYPTO MODE (BTCUSDT)
     =================================*/
-    if (text.length >= 2 && text.length <= 6) {
+    if (/^[A-Z]{3,10}USDT$/.test(text)) {
       try {
-        const q = await getQuote(text);
-
-        if (q && typeof q.c === 'number' && q.c > 0) {
+        const q = await getCryptoQuote(text);
+        if (q?.c > 0) {
           const flex = buildPriceFlex(text, q);
           await reply(event.replyToken, [flex]);
           return res.sendStatus(200);
         }
       } catch (e) {
-        console.log('Quote error, fallback to AI');
+        console.log('Crypto error → fallback AI');
       }
     }
 
     /* ===============================
-       AI MODE
+       STOCK MODE (AAPL, TSLA)
+    =================================*/
+    if (/^[A-Z]{1,6}$/.test(text)) {
+      try {
+        const q = await getQuote(text);
+        if (q?.c > 0) {
+          const flex = buildPriceFlex(text, q);
+          await reply(event.replyToken, [flex]);
+          return res.sendStatus(200);
+        }
+      } catch (e) {
+        console.log('Stock error → fallback AI');
+      }
+    }
+
+    /* ===============================
+       AI MODE (ค้นเว็บก่อนตอบ)
     =================================*/
     const aiText = await askAI(raw);
 
