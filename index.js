@@ -11,36 +11,41 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 /* =====================================================
-   SIMPLE MEMORY (IN-MEMORY CONTEXT)
+   MEMORY
 ===================================================== */
 const userContext = {};
 
 /* =====================================================
-   SYSTEM PROMPT (Friendly Investor Mode)
+   SYSTEM PROMPT
 ===================================================== */
 const SYSTEM_PROMPT = `
 คุณคือเพื่อนนักลงทุนที่มีประสบการณ์
-- คุยเป็นกันเอง ไม่แข็ง ไม่ทางการ
+- คุยเป็นกันเอง
 - วิเคราะห์เข้าใจง่าย
-- ชี้ทั้งโอกาสและความเสี่ยง
-- ถ้าเป็นคำทักทาย ตอบสั้น ๆ แบบอบอุ่น
-- ถ้าเป็นตลาด ใช้ข้อมูลล่าสุด
+- บอกทั้งโอกาสและความเสี่ยง
+- ไม่ใช้ภาษาทางการเกินไป
 `;
 
 /* =====================================================
    OPENAI SAFE CALL
 ===================================================== */
-async function askAI(userText) {
+async function askAI(userText, useSearch = false) {
   try {
+    const body = {
+      model: "gpt-4.1-mini",
+      input: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userText }
+      ]
+    };
+
+    if (useSearch) {
+      body.tools = [{ type: "web_search" }];
+    }
+
     const res = await axios.post(
-      'https://api.openai.com/v1/responses',
-      {
-        model: "gpt-4.1-mini",
-        input: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userText }
-        ]
-      },
+      "https://api.openai.com/v1/responses",
+      body,
       {
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -91,9 +96,11 @@ async function getCryptoQuote(symbol) {
 }
 
 /* =====================================================
-   ECONOMIC CALENDAR
+   ECONOMIC CALENDAR (Hybrid)
 ===================================================== */
-async function getEconomicCalendar() {
+async function getEconomicCalendarHybrid() {
+
+  // ---- Try Finnhub First ----
   try {
     const today = new Date();
     const next7 = new Date();
@@ -105,33 +112,68 @@ async function getEconomicCalendar() {
     const url = `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
     const res = await axios.get(url);
 
-    return (res.data.economicCalendar || []).slice(0, 15);
+    if (res.data?.economicCalendar?.length) {
+      return res.data.economicCalendar.slice(0, 15);
+    }
 
   } catch (err) {
-    console.error("Calendar Error:", err.message);
+    if (err.response?.status === 403) {
+      console.log("Finnhub 403 → Switching to AI Web Search");
+    } else {
+      console.log("Finnhub Calendar Error:", err.message);
+    }
+  }
+
+  // ---- Fallback to AI Web Search ----
+  try {
+    const prompt = `
+ดึงปฏิทินเศรษฐกิจสำคัญ 7 วันข้างหน้า
+ตอบเป็น JSON array
+Format:
+[
+ { "date":"", "country":"", "event":"", "impact":"High/Medium/Low" }
+]
+`;
+
+    const res = await axios.post(
+      "https://api.openai.com/v1/responses",
+      {
+        model: "gpt-4.1-mini",
+        tools: [{ type: "web_search" }],
+        input: prompt
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    let text = "";
+    res.data.output?.forEach(o => {
+      o.content?.forEach(c => {
+        if (c.type === "output_text") text += c.text;
+      });
+    });
+
+    return JSON.parse(text);
+
+  } catch (err) {
+    console.log("AI Calendar Fallback Error:", err.message);
     return [];
   }
 }
 
+/* =====================================================
+   GROUP IMPACT
+===================================================== */
 function groupByImpact(events) {
   return {
     High: events.filter(e => e.impact === "High"),
     Medium: events.filter(e => e.impact === "Medium"),
     Low: events.filter(e => e.impact === "Low")
   };
-}
-
-async function summarizeWeek(events) {
-  const textData = events.map(e =>
-    `${e.date} ${e.country} ${e.event} (${e.impact})`
-  ).join("\n");
-
-  return await askAI(`
-นี่คือเหตุการณ์เศรษฐกิจสัปดาห์นี้:
-${textData}
-
-สรุปภาพรวมแนวโน้มตลาด 3-4 บรรทัด แบบเพื่อนนักลงทุน
-`);
 }
 
 /* =====================================================
@@ -170,7 +212,9 @@ function buildPriceFlex(symbol, q) {
   };
 }
 
-function buildCalendarCarousel(summary, grouped) {
+function buildCalendarFlex(events) {
+
+  const grouped = groupByImpact(events);
 
   function bubble(title, events, color) {
     return {
@@ -197,17 +241,6 @@ function buildCalendarCarousel(summary, grouped) {
     contents: {
       type: "carousel",
       contents: [
-        {
-          type: "bubble",
-          body: {
-            type: "box",
-            layout: "vertical",
-            contents: [
-              { type: "text", text: "📊 ภาพรวมสัปดาห์", weight: "bold", size: "lg" },
-              { type: "text", text: summary, size: "sm", wrap: true }
-            ]
-          }
-        },
         bubble("🔥 High Impact", grouped.High, "#DC2626"),
         bubble("⚡ Medium Impact", grouped.Medium, "#F59E0B"),
         bubble("🟢 Low Impact", grouped.Low, "#16A34A")
@@ -249,21 +282,18 @@ app.post("/webhook", async (req, res) => {
   console.log("USER:", raw);
 
   /* === ECONOMIC MODE === */
-  if (raw.includes("ปฏิทิน") || raw.includes("เศรษฐกิจ")) {
+  if (raw.includes("ปฏิทิน") || raw.includes("ข่าว")) {
 
-    const events = await getEconomicCalendar();
+    const events = await getEconomicCalendarHybrid();
 
     if (!events.length) {
       await reply(event.replyToken, [
-        { type: "text", text: "สัปดาห์นี้ดูเงียบ ๆ ยังไม่มีตัวเลขแรง ๆ เท่าไหร่" }
+        { type: "text", text: "ตอนนี้ดึงปฏิทินไม่ได้ ลองใหม่อีกครั้งนะ" }
       ]);
       return res.sendStatus(200);
     }
 
-    const grouped = groupByImpact(events);
-    const summary = await summarizeWeek(events);
-    const flex = buildCalendarCarousel(summary, grouped);
-
+    const flex = buildCalendarFlex(events);
     await reply(event.replyToken, [flex]);
     return res.sendStatus(200);
   }
@@ -297,5 +327,5 @@ app.post("/webhook", async (req, res) => {
    SERVER
 ===================================================== */
 app.listen(PORT, () => {
-  console.log(`🚀 SignalSeeker Level 2 running on port ${PORT}`);
+  console.log(`🚀 SignalSeeker HYBRID PRO running on port ${PORT}`);
 });
