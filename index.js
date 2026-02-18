@@ -14,18 +14,28 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
    FINNHUB STOCK
 ================================ */
 async function getQuote(symbol) {
-  const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
-  const res = await axios.get(url);
-  return res.data;
+  try {
+    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
+    const res = await axios.get(url);
+    return res.data;
+  } catch (err) {
+    console.error("Stock API Error:", err.message);
+    return null;
+  }
 }
 
 /* ===============================
    FINNHUB CRYPTO
 ================================ */
 async function getCryptoQuote(symbol) {
-  const url = `https://finnhub.io/api/v1/crypto/quote?symbol=BINANCE:${symbol}&token=${FINNHUB_API_KEY}`;
-  const res = await axios.get(url);
-  return res.data;
+  try {
+    const url = `https://finnhub.io/api/v1/crypto/quote?symbol=BINANCE:${symbol}&token=${FINNHUB_API_KEY}`;
+    const res = await axios.get(url);
+    return res.data;
+  } catch (err) {
+    console.error("Crypto API Error:", err.message);
+    return null;
+  }
 }
 
 /* ===============================
@@ -34,7 +44,7 @@ async function getCryptoQuote(symbol) {
 function buildPriceFlex(symbol, q) {
   const change = q.d || 0;
   const pct = q.dp || 0;
-  const up = change > 0;
+  const up = change >= 0;
 
   return {
     type: 'flex',
@@ -78,60 +88,67 @@ function buildPriceFlex(symbol, q) {
 ================================ */
 const SYSTEM_PROMPT = `
 คุณคือ AI นักวิเคราะห์ตลาดสไตล์เพจ Signal Zeeker
-
 - ต้องใช้ข้อมูลล่าสุดจากการค้นหาเว็บก่อนตอบ
 - วิเคราะห์แบบมืออาชีพ
 - กระชับ ชัด เห็นเกมเงินไหล
-- ไม่สอนพื้นฐาน
 - ไม่เยิ่นเย้อ
 - ลงท้ายด้วยครับ
 `;
 
 /* ===============================
-   OPENAI (WEB SEARCH ENABLED)
+   OPENAI (Web Search Enabled)
 ================================ */
 async function askAI(userText) {
-  const res = await axios.post(
-    'https://api.openai.com/v1/responses',
-    {
-      model: 'gpt-4.1-mini',
-      tools: [{ type: "web_search" }],
-      input: [
-        {
-          role: "system",
-          content: SYSTEM_PROMPT
-        },
-        {
-          role: "user",
-          content: userText
+  try {
+    const res = await axios.post(
+      'https://api.openai.com/v1/responses',
+      {
+        model: 'gpt-4.1-mini',
+        tools: [{ type: "web_search" }],
+        input: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userText }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
         }
-      ]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
       }
-    }
-  );
+    );
 
-  return res.data.output_text;
+    // ✅ ดึงข้อความแบบปลอดภัย
+    const output =
+      res.data.output?.[0]?.content?.find(c => c.type === "output_text")?.text ||
+      res.data.output?.[0]?.content?.[0]?.text;
+
+    return output?.trim() || null;
+
+  } catch (err) {
+    console.error("OpenAI Error:", err.response?.data || err.message);
+    return null;
+  }
 }
 
 /* ===============================
    LINE REPLY
 ================================ */
 async function reply(replyToken, messages) {
-  await axios.post(
-    'https://api.line.me/v2/bot/message/reply',
-    { replyToken, messages },
-    {
-      headers: {
-        Authorization: `Bearer ${LINE_TOKEN}`,
-        'Content-Type': 'application/json'
+  try {
+    await axios.post(
+      'https://api.line.me/v2/bot/message/reply',
+      { replyToken, messages },
+      {
+        headers: {
+          Authorization: `Bearer ${LINE_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
       }
-    }
-  );
+    );
+  } catch (err) {
+    console.error("LINE Reply Error:", err.response?.data || err.message);
+  }
 }
 
 /* ===============================
@@ -154,44 +171,37 @@ app.post('/webhook', async (req, res) => {
     const raw = event.message.text.trim();
     let text = raw.toUpperCase();
 
-    console.log('USER:', raw);
+    console.log("USER:", raw);
 
-    /* ===============================
-       CRYPTO MODE (BTCUSDT)
-    =================================*/
+    /* ===== CRYPTO MODE ===== */
     if (/^[A-Z]{3,10}USDT$/.test(text)) {
-      try {
-        const q = await getCryptoQuote(text);
-        if (q?.c > 0) {
-          const flex = buildPriceFlex(text, q);
-          await reply(event.replyToken, [flex]);
-          return res.sendStatus(200);
-        }
-      } catch (e) {
-        console.log('Crypto error → fallback AI');
+      const q = await getCryptoQuote(text);
+      if (q?.c > 0) {
+        const flex = buildPriceFlex(text, q);
+        await reply(event.replyToken, [flex]);
+        return res.sendStatus(200);
       }
     }
 
-    /* ===============================
-       STOCK MODE (AAPL, TSLA)
-    =================================*/
+    /* ===== STOCK MODE ===== */
     if (/^[A-Z]{1,6}$/.test(text)) {
-      try {
-        const q = await getQuote(text);
-        if (q?.c > 0) {
-          const flex = buildPriceFlex(text, q);
-          await reply(event.replyToken, [flex]);
-          return res.sendStatus(200);
-        }
-      } catch (e) {
-        console.log('Stock error → fallback AI');
+      const q = await getQuote(text);
+      if (q?.c > 0) {
+        const flex = buildPriceFlex(text, q);
+        await reply(event.replyToken, [flex]);
+        return res.sendStatus(200);
       }
     }
 
-    /* ===============================
-       AI MODE (ค้นเว็บก่อนตอบ)
-    =================================*/
+    /* ===== AI MODE ===== */
     const aiText = await askAI(raw);
+
+    if (!aiText) {
+      await reply(event.replyToken, [
+        { type: 'text', text: 'ระบบกำลังดึงข้อมูล ไม่พบคำตอบชั่วคราวครับ' }
+      ]);
+      return res.sendStatus(200);
+    }
 
     await reply(event.replyToken, [
       { type: 'text', text: aiText }
@@ -200,7 +210,7 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
 
   } catch (err) {
-    console.error('ERROR:', err.response?.data || err.message);
+    console.error("Webhook Error:", err.response?.data || err.message);
     res.sendStatus(500);
   }
 });
