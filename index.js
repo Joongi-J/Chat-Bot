@@ -70,7 +70,7 @@ async function askAI(userText, useSearch = false) {
 }
 
 /* =====================================================
-   FINNHUB STOCK
+   STOCK (Finnhub)
 ===================================================== */
 async function getQuote(symbol) {
   try {
@@ -83,7 +83,7 @@ async function getQuote(symbol) {
 }
 
 /* =====================================================
-   FINNHUB CRYPTO
+   CRYPTO (Finnhub)
 ===================================================== */
 async function getCryptoQuote(symbol) {
   try {
@@ -96,43 +96,21 @@ async function getCryptoQuote(symbol) {
 }
 
 /* =====================================================
-   ECONOMIC CALENDAR (Hybrid)
+   LEVEL 3 ECONOMIC CALENDAR (AI ONLY)
 ===================================================== */
-async function getEconomicCalendarHybrid() {
-
-  // ---- Try Finnhub First ----
-  try {
-    const today = new Date();
-    const next7 = new Date();
-    next7.setDate(today.getDate() + 7);
-
-    const from = today.toISOString().split('T')[0];
-    const to = next7.toISOString().split('T')[0];
-
-    const url = `https://finnhub.io/api/v1/calendar/economic?from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
-    const res = await axios.get(url);
-
-    if (res.data?.economicCalendar?.length) {
-      return res.data.economicCalendar.slice(0, 15);
-    }
-
-  } catch (err) {
-    if (err.response?.status === 403) {
-      console.log("Finnhub 403 → Switching to AI Web Search");
-    } else {
-      console.log("Finnhub Calendar Error:", err.message);
-    }
-  }
-
-  // ---- Fallback to AI Web Search ----
+async function getEconomicCalendarAI() {
   try {
     const prompt = `
-ดึงปฏิทินเศรษฐกิจสำคัญ 7 วันข้างหน้า
-ตอบเป็น JSON array
-Format:
+ดึงปฏิทินเศรษฐกิจสำคัญทั่วโลก 7 วันข้างหน้า
+
+ตอบเป็น JSON array เท่านั้น
+รูปแบบ:
 [
- { "date":"", "country":"", "event":"", "impact":"High/Medium/Low" }
+ { "date":"YYYY-MM-DD", "country":"US", "event":"CPI", "impact":"High" }
 ]
+
+impact ต้องเป็น High / Medium / Low เท่านั้น
+ห้ามมีคำอธิบายอื่น
 `;
 
     const res = await axios.post(
@@ -157,16 +135,33 @@ Format:
       });
     });
 
-    return JSON.parse(text);
+    // 🔥 Extract JSON safely
+    const match = text.match(/\[.*\]/s);
+    if (!match) {
+      console.log("No JSON detected in AI response");
+      return [];
+    }
+
+    const parsed = JSON.parse(match[0]);
+
+    // 🔥 Validate + sanitize
+    return parsed.map(e => ({
+      date: e.date || "",
+      country: e.country || "",
+      event: e.event || "",
+      impact: ["High","Medium","Low"].includes(e.impact)
+        ? e.impact
+        : "Medium"
+    }));
 
   } catch (err) {
-    console.log("AI Calendar Fallback Error:", err.message);
+    console.error("AI Calendar Error:", err.message);
     return [];
   }
 }
 
 /* =====================================================
-   GROUP IMPACT
+   GROUP BY IMPACT
 ===================================================== */
 function groupByImpact(events) {
   return {
@@ -226,7 +221,7 @@ function buildCalendarFlex(events) {
           { type: "text", text: title, weight: "bold", size: "lg", color },
           ...events.slice(0,5).map(e => ({
             type: "text",
-            text: `${e.date} - ${e.event}`,
+            text: `${e.date} ${e.country} - ${e.event}`,
             size: "xs",
             wrap: true
           }))
@@ -281,14 +276,14 @@ app.post("/webhook", async (req, res) => {
 
   console.log("USER:", raw);
 
-  /* === ECONOMIC MODE === */
+  /* === ECONOMIC CALENDAR === */
   if (raw.includes("ปฏิทิน") || raw.includes("ข่าว")) {
 
-    const events = await getEconomicCalendarHybrid();
+    const events = await getEconomicCalendarAI();
 
     if (!events.length) {
       await reply(event.replyToken, [
-        { type: "text", text: "ตอนนี้ดึงปฏิทินไม่ได้ ลองใหม่อีกครั้งนะ" }
+        { type: "text", text: "ตอนนี้ยังดึงข้อมูลปฏิทินไม่ได้ ลองใหม่อีกครั้งนะ" }
       ]);
       return res.sendStatus(200);
     }
@@ -327,5 +322,5 @@ app.post("/webhook", async (req, res) => {
    SERVER
 ===================================================== */
 app.listen(PORT, () => {
-  console.log(`🚀 SignalSeeker HYBRID PRO running on port ${PORT}`);
+  console.log(`🚀 SignalSeeker LEVEL 3 running on port ${PORT}`);
 });
