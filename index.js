@@ -1,6 +1,6 @@
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
+require("dotenv").config();
+const express = require("express");
+const axios = require("axios");
 
 const app = express();
 app.use(express.json());
@@ -11,36 +11,64 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 /* =====================================================
-   MEMORY
-===================================================== */
-const userContext = {};
-
-/* =====================================================
    SYSTEM PROMPT
 ===================================================== */
 const SYSTEM_PROMPT = `
-คุณคือเพื่อนนักลงทุนที่มีประสบการณ์
-- คุยเป็นกันเอง
+คุณคือเพื่อนนักลงทุนสายวิเคราะห์
+- คุยเป็นกันเอง เหมือนเพื่อนให้คำแนะนำ
 - วิเคราะห์เข้าใจง่าย
 - บอกทั้งโอกาสและความเสี่ยง
-- ไม่ใช้ภาษาทางการเกินไป
+- ถ้าต้องค้นข้อมูลปัจจุบัน ให้ใช้ web search tool
+- ห้ามตอบแข็งหรือเป็นทางการเกินไป
 `;
 
 /* =====================================================
-   OPENAI SAFE CALL
+   OPENAI CALL (รองรับ Web Search จริง)
 ===================================================== */
-async function askAI(userText, useSearch = false) {
+async function askAI(userText, useSearch = false, forceJSON = false) {
   try {
+
     const body = {
-      model: "gpt-4.1-mini",
+      model: "gpt-4.1",
       input: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userText }
+        {
+          role: "system",
+          content: SYSTEM_PROMPT
+        },
+        {
+          role: "user",
+          content: userText
+        }
       ]
     };
 
+    // 🔥 เปิด Web Search Tool จริง
     if (useSearch) {
       body.tools = [{ type: "web_search" }];
+      body.tool_choice = "auto";
+    }
+
+    // 🔥 บังคับ JSON ถ้าต้องการ
+    if (forceJSON) {
+      body.response_format = {
+        type: "json_schema",
+        json_schema: {
+          name: "calendar_schema",
+          schema: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                date: { type: "string" },
+                country: { type: "string" },
+                event: { type: "string" },
+                impact: { type: "string" }
+              },
+              required: ["date","country","event","impact"]
+            }
+          }
+        }
+      };
     }
 
     const res = await axios.post(
@@ -54,10 +82,23 @@ async function askAI(userText, useSearch = false) {
       }
     );
 
+    /* ===============================
+       ถ้าเป็น JSON mode
+    =============================== */
+    if (forceJSON) {
+      return res.data.output_parsed || [];
+    }
+
+    /* ===============================
+       ปกติรวมข้อความทั้งหมด
+    =============================== */
     let text = "";
+
     res.data.output?.forEach(o => {
       o.content?.forEach(c => {
-        if (c.type === "output_text") text += c.text;
+        if (c.type === "output_text") {
+          text += c.text;
+        }
       });
     });
 
@@ -65,12 +106,12 @@ async function askAI(userText, useSearch = false) {
 
   } catch (err) {
     console.error("OpenAI Error:", err.response?.data || err.message);
-    return "ช่วงนี้ข้อมูลอาจหน่วงนิดนึง ลองใหม่อีกครั้งนะ";
+    return forceJSON ? [] : "ช่วงนี้ข้อมูลอาจหน่วงนิดนึง ลองใหม่อีกครั้งนะ";
   }
 }
 
 /* =====================================================
-   STOCK (Finnhub)
+   FINNHUB STOCK
 ===================================================== */
 async function getQuote(symbol) {
   try {
@@ -83,7 +124,7 @@ async function getQuote(symbol) {
 }
 
 /* =====================================================
-   CRYPTO (Finnhub)
+   FINNHUB CRYPTO
 ===================================================== */
 async function getCryptoQuote(symbol) {
   try {
@@ -96,68 +137,20 @@ async function getCryptoQuote(symbol) {
 }
 
 /* =====================================================
-   LEVEL 3 ECONOMIC CALENDAR (AI ONLY)
+   ECONOMIC CALENDAR (AI + WEB SEARCH จริง)
 ===================================================== */
-async function getEconomicCalendarAI() {
-  try {
-    const prompt = `
-ดึงปฏิทินเศรษฐกิจสำคัญทั่วโลก 7 วันข้างหน้า
+async function getEconomicCalendar() {
+
+  const prompt = `
+ค้นหาปฏิทินเศรษฐกิจสำคัญทั่วโลก 7 วันข้างหน้า
+
+ดึงเฉพาะเหตุการณ์ที่มีผลต่อตลาดการเงิน
+impact ต้องเป็น High / Medium / Low เท่านั้น
 
 ตอบเป็น JSON array เท่านั้น
-รูปแบบ:
-[
- { "date":"YYYY-MM-DD", "country":"US", "event":"CPI", "impact":"High" }
-]
-
-impact ต้องเป็น High / Medium / Low เท่านั้น
-ห้ามมีคำอธิบายอื่น
 `;
 
-    const res = await axios.post(
-      "https://api.openai.com/v1/responses",
-      {
-        model: "gpt-4.1-mini",
-        tools: [{ type: "web_search" }],
-        input: prompt
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    let text = "";
-    res.data.output?.forEach(o => {
-      o.content?.forEach(c => {
-        if (c.type === "output_text") text += c.text;
-      });
-    });
-
-    // 🔥 Extract JSON safely
-    const match = text.match(/\[.*\]/s);
-    if (!match) {
-      console.log("No JSON detected in AI response");
-      return [];
-    }
-
-    const parsed = JSON.parse(match[0]);
-
-    // 🔥 Validate + sanitize
-    return parsed.map(e => ({
-      date: e.date || "",
-      country: e.country || "",
-      event: e.event || "",
-      impact: ["High","Medium","Low"].includes(e.impact)
-        ? e.impact
-        : "Medium"
-    }));
-
-  } catch (err) {
-    console.error("AI Calendar Error:", err.message);
-    return [];
-  }
+  return await askAI(prompt, true, true);
 }
 
 /* =====================================================
@@ -172,7 +165,7 @@ function groupByImpact(events) {
 }
 
 /* =====================================================
-   FLEX BUILDERS
+   FLEX PRICE
 ===================================================== */
 function buildPriceFlex(symbol, q) {
   const change = q.d || 0;
@@ -181,7 +174,7 @@ function buildPriceFlex(symbol, q) {
 
   return {
     type: "flex",
-    altText: `${symbol} $${q.c}`,
+    altText: `${symbol} ${q.c}`,
     contents: {
       type: "bubble",
       body: {
@@ -191,7 +184,7 @@ function buildPriceFlex(symbol, q) {
           { type: "text", text: symbol, weight: "bold", size: "xl" },
           {
             type: "text",
-            text: `$${q.c}`,
+            text: `${q.c}`,
             size: "xxl",
             weight: "bold",
             color: up ? "#16A34A" : "#DC2626"
@@ -207,6 +200,9 @@ function buildPriceFlex(symbol, q) {
   };
 }
 
+/* =====================================================
+   FLEX CALENDAR
+===================================================== */
 function buildCalendarFlex(events) {
 
   const grouped = groupByImpact(events);
@@ -270,30 +266,26 @@ app.post("/webhook", async (req, res) => {
 
   const raw = event.message.text.trim();
   const text = raw.toUpperCase();
-  const userId = event.source.userId;
-
-  userContext[userId] = raw;
 
   console.log("USER:", raw);
 
-  /* === ECONOMIC CALENDAR === */
+  /* ================= ECONOMIC CALENDAR ================= */
   if (raw.includes("ปฏิทิน") || raw.includes("ข่าว")) {
 
-    const events = await getEconomicCalendarAI();
+    const events = await getEconomicCalendar();
 
     if (!events.length) {
       await reply(event.replyToken, [
-        { type: "text", text: "ตอนนี้ยังดึงข้อมูลปฏิทินไม่ได้ ลองใหม่อีกครั้งนะ" }
+        { type: "text", text: "ตอนนี้ยังดึงปฏิทินไม่ได้ เดี๋ยวลองใหม่ให้นะ" }
       ]);
       return res.sendStatus(200);
     }
 
-    const flex = buildCalendarFlex(events);
-    await reply(event.replyToken, [flex]);
+    await reply(event.replyToken, [buildCalendarFlex(events)]);
     return res.sendStatus(200);
   }
 
-  /* === CRYPTO === */
+  /* ================= CRYPTO ================= */
   if (/^[A-Z]{3,10}USDT$/.test(text)) {
     const q = await getCryptoQuote(text);
     if (q?.c > 0) {
@@ -302,7 +294,7 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  /* === STOCK === */
+  /* ================= STOCK ================= */
   if (/^[A-Z]{1,6}$/.test(text)) {
     const q = await getQuote(text);
     if (q?.c > 0) {
@@ -311,8 +303,8 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  /* === AI GENERAL === */
-  const aiText = await askAI(raw);
+  /* ================= AI GENERAL (Web Search Auto) ================= */
+  const aiText = await askAI(raw, true, false);
   await reply(event.replyToken, [{ type: "text", text: aiText }]);
 
   res.sendStatus(200);
@@ -322,5 +314,5 @@ app.post("/webhook", async (req, res) => {
    SERVER
 ===================================================== */
 app.listen(PORT, () => {
-  console.log(`🚀 SignalSeeker LEVEL 3 running on port ${PORT}`);
+  console.log(`🚀 SignalSeeker AI + WebSearch running on port ${PORT}`);
 });
