@@ -11,7 +11,7 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 /* ===============================
-   FINNHUB
+   FINNHUB QUOTE
 ================================ */
 async function getQuote(symbol) {
   const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
@@ -20,7 +20,7 @@ async function getQuote(symbol) {
 }
 
 /* ===============================
-   FLEX BUILDER
+   FLEX MESSAGE BUILDER
 ================================ */
 function buildPriceFlex(symbol, q) {
   const change = q.d || 0;
@@ -65,23 +65,84 @@ function buildPriceFlex(symbol, q) {
 }
 
 /* ===============================
-   AI
+   SYSTEM PROMPT - SIGNAL ZEEKER PRO
 ================================ */
-async function askAI(text) {
+const SYSTEM_PROMPT = `
+คุณคือ AI นักวิเคราะห์ตลาดสไตล์เพจ Signal Zeeker
+
+บุคลิก:
+- วิเคราะห์แบบมืออาชีพ
+- กระชับ ชัด เห็นเกมเงินไหล
+- ไม่สอนพื้นฐาน
+- ไม่พูดกว้าง
+- ไม่ใช้คำว่า "โดยทั่วไป"
+- ไม่เขียนแบบบทความวิชาการ
+- ไม่โลกสวย
+- ลงท้ายด้วยครับ
+
+รูปแบบการตอบ:
+
+1) ถ้าถามภาพรวมตลาด / ตลาดวันนี้
+ตอบ 4 ส่วนเสมอ:
+
+[ภาพรวมตลาด]
+สรุปสั้น 2-3 บรรทัด
+
+[ปัจจัยขับเคลื่อน]
+ข่าว/ตัวเลข/บอนด์ยีลด์/ดอลลาร์/ภูมิรัฐศาสตร์
+
+[เงินไหลไปไหน]
+sector หรือ asset เด่น
+
+[สิ่งที่ต้องจับตา]
+เหตุการณ์ถัดไปที่อาจเปลี่ยนทิศตลาด
+
+2) ถ้าถามปฏิทินเศรษฐกิจ
+
+[เหตุการณ์สำคัญ]
+- ชื่อเหตุการณ์ + เวลา
+
+[ถ้าออกมาสูงกว่าคาด]
+→ กระทบอะไร
+
+[ถ้าออกมาต่ำกว่าคาด]
+→ กระทบอะไร
+
+3) ถ้าถามควรซื้อไหม
+- ห้ามฟันธง
+- ตอบเชิงความน่าจะเป็น
+- บอกความเสี่ยงหลัก
+
+4) ถ้าถามหุ้นรายตัว
+
+[แนวโน้ม]
+[ปัจจัยบวก]
+[ความเสี่ยง]
+[มุมมองความน่าจะเป็น]
+
+ข้อห้าม:
+- ห้ามตอบแบบบทเรียน
+- ห้ามเยิ่นเย้อ
+- ถ้าไม่มีปัจจัยใหม่ ให้บอกว่ายังไม่มีปัจจัยใหม่ชัดเจน
+
+เขียนเหมือนกำลังสรุปให้เทรดเดอร์มืออาชีพอ่านทุกเช้าครับ
+`;
+
+/* ===============================
+   OPENAI
+================================ */
+async function askAI(userText) {
   const res = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
       model: 'gpt-4o-mini',
       messages: [
-        {
-          role: 'system',
-          content:
-            'คุณคือ AI วิเคราะห์ตลาด พูดเหมือนคนจริง ไม่เดาราคา ถ้าถามควรซื้อไหมให้ตอบเชิงความน่าจะเป็น ลงท้ายด้วยครับ'
-        },
-        { role: 'user', content: text }
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userText }
       ],
-      temperature: 0.7,
-      max_tokens: 500
+      temperature: 0.4,
+      top_p: 0.9,
+      max_tokens: 700
     },
     {
       headers: {
@@ -130,27 +191,38 @@ app.post('/webhook', async (req, res) => {
     const raw = event.message.text;
     const text = raw.replace(/[^a-zA-Z]/g, '').toUpperCase();
 
-    console.log('USER INPUT:', raw, '→', text);
+    console.log('USER:', raw, '→', text);
 
-    /* === PRICE MODE === */
+    /* ===============================
+       PRICE MODE
+    =================================*/
     if (text.length >= 2 && text.length <= 6) {
-      const q = await getQuote(text);
-      console.log('FINNHUB:', q);
+      try {
+        const q = await getQuote(text);
 
-      if (q && typeof q.c === 'number' && q.c > 0) {
-        const flex = buildPriceFlex(text, q);
-        await reply(event.replyToken, [flex]);
-        return res.sendStatus(200);
+        if (q && typeof q.c === 'number' && q.c > 0) {
+          const flex = buildPriceFlex(text, q);
+          await reply(event.replyToken, [flex]);
+          return res.sendStatus(200);
+        }
+      } catch (e) {
+        console.log('Quote error, fallback to AI');
       }
     }
 
-    /* === AI MODE === */
+    /* ===============================
+       AI MODE
+    =================================*/
     const aiText = await askAI(raw);
-    await reply(event.replyToken, [{ type: 'text', text: aiText }]);
+
+    await reply(event.replyToken, [
+      { type: 'text', text: aiText }
+    ]);
 
     res.sendStatus(200);
+
   } catch (err) {
-    console.error('ERROR:', err.message);
+    console.error('ERROR:', err.response?.data || err.message);
     res.sendStatus(500);
   }
 });
@@ -159,5 +231,5 @@ app.post('/webhook', async (req, res) => {
    SERVER
 ================================ */
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Signal Zeeker running on port ${PORT}`);
 });
