@@ -11,62 +11,53 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* =====================================================
-   MEMORY SYSTEM
+   MEMORY + DESK STATE
 ===================================================== */
 const userMemory = {};
+const deskState = {};
+const MAX_MEMORY = 20;
 
 /* =====================================================
-   INSTITUTIONAL ELITE SYSTEM PROMPT
+   SYSTEM PROMPT – PRIME BROKER DESK MODE
 ===================================================== */
 const SYSTEM_PROMPT = `
-คุณคือ Chief Strategist จาก Hedge Fund
+You are a Senior Portfolio Manager at a Prime Brokerage Macro Desk.
 
-สไตล์:
-- วิเคราะห์แบบ Institutional
-- ไม่ขายของ
-- ไม่เว่อร์
-- สุขุม มั่นใจ มีตรรกะ
+Respond like internal trading floor chat.
+No headings.
+No bullet points.
+No links.
+No article formatting.
+No explaining basics.
+No motivational tone.
 
-โครงสร้างการตอบ:
+Tone:
+Calm.
+Direct.
+Conviction when clear.
+Say "not clear yet" if uncertain.
 
-[Market Snapshot]
-ภาพรวมสั้น ๆ
-
-[Structure]
-Trend / Liquidity / Momentum
-
-[Macro & Flow]
-เงินไหล / ดอกเบี้ย / Dollar / Risk Sentiment
-
-[Volatility & Risk]
-ความเสี่ยงหลัก
-
-[Trade Framework]
-Scenario A / Scenario B
-
-[Desk Bias]
-มุมมองเชิงกลยุทธ์แบบเป็นกลาง
-
-ถ้าเป็นข้อมูลล่าสุด:
-ต้องใช้ web_search
+Use desk context provided.
+If real-time macro is needed, use web_search.
+Keep it concise.
 `;
 
 /* =====================================================
-   OPENAI CALL
+   OPENAI ENGINE
 ===================================================== */
-async function askAI(userId, text, useSearch=false) {
+async function askAI(userId, text, context, useSearch = false) {
   try {
-
-    if (!userMemory[userId]) {
-      userMemory[userId] = [];
-    }
+    if (!userMemory[userId]) userMemory[userId] = [];
 
     userMemory[userId].push({ role: "user", content: text });
+    if (userMemory[userId].length > MAX_MEMORY)
+      userMemory[userId].shift();
 
     const body = {
       model: "gpt-4.1",
       input: [
         { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: `DeskContext:${JSON.stringify(context)}` },
         ...userMemory[userId]
       ]
     };
@@ -83,21 +74,23 @@ async function askAI(userId, text, useSearch=false) {
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
           "Content-Type": "application/json"
-        }
+        },
+        timeout: 20000
       }
     );
 
-    let outputText = "";
+    let output = "";
 
-    res.data.output?.forEach(o => {
-      o.content?.forEach(c => {
-        if (c.type === "output_text") {
-          outputText += c.text;
+    for (const item of res.data.output || []) {
+      for (const part of item.content || []) {
+        if (part.type === "output_text") {
+          output += part.text;
         }
-      });
-    });
+      }
+    }
 
-    const finalText = outputText.trim() || "Desk evaluating data...";
+    const finalText =
+      output.trim() || "Flow muted. No edge yet.";
 
     userMemory[userId].push({
       role: "assistant",
@@ -108,17 +101,18 @@ async function askAI(userId, text, useSearch=false) {
 
   } catch (err) {
     console.error("OpenAI Error:", err.response?.data || err.message);
-    return "Institutional Desk system error.";
+    return "Desk latency spike. Retry.";
   }
 }
 
 /* =====================================================
-   MARKET DATA
+   MARKET DATA LAYER
 ===================================================== */
-async function getStock(symbol) {
+
+async function getQuote(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
-    const res = await axios.get(url);
+    const res = await axios.get(url, { timeout: 10000 });
     return res.data;
   } catch {
     return null;
@@ -128,17 +122,7 @@ async function getStock(symbol) {
 async function getCrypto(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/crypto/quote?symbol=BINANCE:${symbol}&token=${FINNHUB_API_KEY}`;
-    const res = await axios.get(url);
-    return res.data;
-  } catch {
-    return null;
-  }
-}
-
-async function getGold() {
-  try {
-    const url = `https://finnhub.io/api/v1/quote?symbol=OANDA:XAU_USD&token=${FINNHUB_API_KEY}`;
-    const res = await axios.get(url);
+    const res = await axios.get(url, { timeout: 10000 });
     return res.data;
   } catch {
     return null;
@@ -146,64 +130,95 @@ async function getGold() {
 }
 
 /* =====================================================
-   RISK REWARD CALCULATOR
+   CORE MACRO SNAPSHOT ENGINE
 ===================================================== */
-function calculateRR(entry, stop, target) {
-  const risk = Math.abs(entry - stop);
-  const reward = Math.abs(target - entry);
-  const rr = reward / risk;
-  return rr.toFixed(2);
-}
 
-/* =====================================================
-   POSITION SIZE CALCULATOR
-===================================================== */
-function calculatePositionSize(accountSize, riskPercent, entry, stop) {
-  const riskAmount = accountSize * (riskPercent / 100);
-  const riskPerUnit = Math.abs(entry - stop);
-  const positionSize = riskAmount / riskPerUnit;
-  return positionSize.toFixed(2);
-}
+async function buildMacroSnapshot() {
 
-/* =====================================================
-   FLEX BUILDER
-===================================================== */
-function buildFlex(symbol, priceData) {
-  const change = priceData.d || 0;
-  const pct = priceData.dp || 0;
-  const up = change >= 0;
+  const gold = await getQuote("OANDA:XAU_USD");
+  const spy = await getQuote("SPY");
+  const vix = await getQuote("^VIX");
+  const dxy = await getQuote("DXY");
+  const us10y = await getQuote("US10Y"); // proxy symbol
 
   return {
-    type: "flex",
-    altText: `${symbol} ${priceData.c}`,
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: symbol, weight: "bold", size: "xl" },
-          {
-            type: "text",
-            text: `${priceData.c}`,
-            size: "xxl",
-            weight: "bold",
-            color: up ? "#16A34A" : "#DC2626"
-          },
-          {
-            type: "text",
-            text: `${up ? "▲" : "▼"} ${change.toFixed(2)} (${pct.toFixed(2)}%)`,
-            size: "sm"
-          }
-        ]
-      }
-    }
+    gold: gold?.c || null,
+    spy: spy?.c || null,
+    vix: vix?.c || null,
+    dollar: dxy?.c || null,
+    yield10y: us10y?.c || null
   };
+}
+
+/* =====================================================
+   REGIME DETECTION
+===================================================== */
+
+function detectRegime(snapshot) {
+  if (!snapshot.vix || !snapshot.spy || !snapshot.dollar)
+    return "Unknown";
+
+  if (snapshot.vix > 22 && snapshot.spy <  snapshot.spy * 1.0)
+    return "Risk-Off";
+
+  if (snapshot.vix < 18)
+    return "Risk-On";
+
+  return "Transition";
+}
+
+/* =====================================================
+   VOLATILITY HEATMAP
+===================================================== */
+
+function volatilityState(vix) {
+  if (!vix) return "Unknown";
+  if (vix > 28) return "Stress";
+  if (vix > 20) return "Elevated";
+  if (vix < 14) return "Compressed";
+  return "Normal";
+}
+
+/* =====================================================
+   DOLLAR PRESSURE LOGIC
+===================================================== */
+
+function dollarPressure(dollar, yield10y) {
+  if (!dollar || !yield10y) return "Neutral";
+
+  if (dollar > 0 && yield10y > 0)
+    return "Tightening Pressure";
+
+  if (dollar < 0 && yield10y < 0)
+    return "Liquidity Expansion";
+
+  return "Mixed";
+}
+
+/* =====================================================
+   SEARCH DETECTOR
+===================================================== */
+
+function shouldUseSearch(text) {
+  const keywords = [
+    "fed",
+    "cpi",
+    "inflation",
+    "fomc",
+    "ข่าว",
+    "ล่าสุด",
+    "ดอกเบี้ย"
+  ];
+
+  return keywords.some(k =>
+    text.toLowerCase().includes(k)
+  );
 }
 
 /* =====================================================
    LINE REPLY
 ===================================================== */
+
 async function reply(replyToken, messages) {
   await axios.post(
     "https://api.line.me/v2/bot/message/reply",
@@ -218,112 +233,67 @@ async function reply(replyToken, messages) {
 }
 
 /* =====================================================
-   SEARCH DETECTOR
-===================================================== */
-function shouldUseSearch(text) {
-  const keywords = [
-    "ข่าว",
-    "ล่าสุด",
-    "ตอนนี้",
-    "ปฏิทิน",
-    "cpi",
-    "fed",
-    "ดอกเบี้ย",
-    "ทอง"
-  ];
-  return keywords.some(k => text.toLowerCase().includes(k));
-}
-
-/* =====================================================
    WEBHOOK
 ===================================================== */
+
 app.post("/webhook", async (req, res) => {
 
-  const event = req.body.events?.[0];
-  if (!event || event.type !== "message") {
-    return res.sendStatus(200);
-  }
+  try {
 
-  const raw = event.message.text.trim();
-  const text = raw.toUpperCase();
-  const userId = event.source.userId;
-
-  console.log("USER:", raw);
-
-  /* ===== GOLD ===== */
-  if (text.includes("XAU") || text.includes("ทอง")) {
-    const gold = await getGold();
-    if (gold?.c) {
-      await reply(event.replyToken, [buildFlex("XAUUSD", gold)]);
+    const event = req.body.events?.[0];
+    if (!event || event.type !== "message")
       return res.sendStatus(200);
-    }
-  }
 
-  /* ===== CRYPTO ===== */
-  if (/^[A-Z]{3,10}USDT$/.test(text)) {
-    const crypto = await getCrypto(text);
-    if (crypto?.c) {
-      await reply(event.replyToken, [buildFlex(text, crypto)]);
-      return res.sendStatus(200);
-    }
-  }
+    const raw = event.message.text?.trim();
+    if (!raw) return res.sendStatus(200);
 
-  /* ===== STOCK ===== */
-  if (/^[A-Z]{1,6}$/.test(text)) {
-    const stock = await getStock(text);
-    if (stock?.c) {
-      await reply(event.replyToken, [buildFlex(text, stock)]);
-      return res.sendStatus(200);
-    }
-  }
+    const userId = event.source.userId;
 
-  /* ===== RISK REWARD COMMAND ===== */
-  if (text.startsWith("RR ")) {
-    const parts = raw.split(" ");
-    const entry = parseFloat(parts[1]);
-    const stop = parseFloat(parts[2]);
-    const target = parseFloat(parts[3]);
+    if (!deskState[userId])
+      deskState[userId] = { bias: "Neutral" };
 
-    const rr = calculateRR(entry, stop, target);
+    const snapshot = await buildMacroSnapshot();
+
+    const regime = detectRegime(snapshot);
+    const volState = volatilityState(snapshot.vix);
+    const liquidity = dollarPressure(
+      snapshot.dollar,
+      snapshot.yield10y
+    );
+
+    const context = {
+      regime,
+      volatility: volState,
+      liquidity,
+      gold: snapshot.gold,
+      spy: snapshot.spy
+    };
+
+    const useSearch = shouldUseSearch(raw);
+
+    const aiText = await askAI(
+      userId,
+      raw,
+      context,
+      useSearch
+    );
 
     await reply(event.replyToken, [
-      { type: "text", text: `Risk/Reward Ratio = 1:${rr}` }
+      { type: "text", text: aiText }
     ]);
 
-    return res.sendStatus(200);
+    res.sendStatus(200);
+
+  } catch (err) {
+    console.error("Webhook Error:", err.message);
+    res.sendStatus(500);
   }
-
-  /* ===== POSITION SIZE ===== */
-  if (text.startsWith("SIZE ")) {
-    const parts = raw.split(" ");
-    const account = parseFloat(parts[1]);
-    const riskPercent = parseFloat(parts[2]);
-    const entry = parseFloat(parts[3]);
-    const stop = parseFloat(parts[4]);
-
-    const size = calculatePositionSize(account, riskPercent, entry, stop);
-
-    await reply(event.replyToken, [
-      { type: "text", text: `Position Size ≈ ${size} units` }
-    ]);
-
-    return res.sendStatus(200);
-  }
-
-  /* ===== AI ANALYSIS ===== */
-  const useSearch = shouldUseSearch(raw);
-  const aiText = await askAI(userId, raw, useSearch);
-
-  await reply(event.replyToken, [
-    { type: "text", text: aiText }
-  ]);
-
-  res.sendStatus(200);
 });
 
 /* =====================================================
    START SERVER
 ===================================================== */
+
 app.listen(PORT, () => {
-  console.log("🏦 Institutional Elite Mode Running on Port " + PORT);
+  console.log("🏦 Prime Broker Mode Running on Port " + PORT);
 });
