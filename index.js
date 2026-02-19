@@ -7,68 +7,73 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const LINE_TOKEN = process.env.LINE_TOKEN;
-const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 
 /* =====================================================
-   SYSTEM PROMPT
+   MEMORY SYSTEM
+===================================================== */
+const userMemory = {};
+
+/* =====================================================
+   INSTITUTIONAL ELITE SYSTEM PROMPT
 ===================================================== */
 const SYSTEM_PROMPT = `
-คุณคือเพื่อนนักลงทุนสายวิเคราะห์
-- คุยเป็นกันเอง เหมือนเพื่อนให้คำแนะนำ
-- วิเคราะห์เข้าใจง่าย
-- บอกทั้งโอกาสและความเสี่ยง
-- ถ้าต้องค้นข้อมูลปัจจุบัน ให้ใช้ web search tool
-- ห้ามตอบแข็งหรือเป็นทางการเกินไป
+คุณคือ Chief Strategist จาก Hedge Fund
+
+สไตล์:
+- วิเคราะห์แบบ Institutional
+- ไม่ขายของ
+- ไม่เว่อร์
+- สุขุม มั่นใจ มีตรรกะ
+
+โครงสร้างการตอบ:
+
+[Market Snapshot]
+ภาพรวมสั้น ๆ
+
+[Structure]
+Trend / Liquidity / Momentum
+
+[Macro & Flow]
+เงินไหล / ดอกเบี้ย / Dollar / Risk Sentiment
+
+[Volatility & Risk]
+ความเสี่ยงหลัก
+
+[Trade Framework]
+Scenario A / Scenario B
+
+[Desk Bias]
+มุมมองเชิงกลยุทธ์แบบเป็นกลาง
+
+ถ้าเป็นข้อมูลล่าสุด:
+ต้องใช้ web_search
 `;
 
 /* =====================================================
-   OPENAI CALL (รองรับ Web Search จริง)
+   OPENAI CALL
 ===================================================== */
-async function askAI(userText, useSearch = false, forceJSON = false) {
+async function askAI(userId, text, useSearch=false) {
   try {
+
+    if (!userMemory[userId]) {
+      userMemory[userId] = [];
+    }
+
+    userMemory[userId].push({ role: "user", content: text });
 
     const body = {
       model: "gpt-4.1",
       input: [
-        {
-          role: "system",
-          content: SYSTEM_PROMPT
-        },
-        {
-          role: "user",
-          content: userText
-        }
+        { role: "system", content: SYSTEM_PROMPT },
+        ...userMemory[userId]
       ]
     };
 
-    // 🔥 เปิด Web Search Tool จริง
     if (useSearch) {
       body.tools = [{ type: "web_search" }];
       body.tool_choice = "auto";
-    }
-
-    // 🔥 บังคับ JSON ถ้าต้องการ
-    if (forceJSON) {
-      body.response_format = {
-        type: "json_schema",
-        json_schema: {
-          name: "calendar_schema",
-          schema: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                date: { type: "string" },
-                country: { type: "string" },
-                event: { type: "string" },
-                impact: { type: "string" }
-              },
-              required: ["date","country","event","impact"]
-            }
-          }
-        }
-      };
     }
 
     const res = await axios.post(
@@ -82,38 +87,35 @@ async function askAI(userText, useSearch = false, forceJSON = false) {
       }
     );
 
-    /* ===============================
-       ถ้าเป็น JSON mode
-    =============================== */
-    if (forceJSON) {
-      return res.data.output_parsed || [];
-    }
-
-    /* ===============================
-       ปกติรวมข้อความทั้งหมด
-    =============================== */
-    let text = "";
+    let outputText = "";
 
     res.data.output?.forEach(o => {
       o.content?.forEach(c => {
         if (c.type === "output_text") {
-          text += c.text;
+          outputText += c.text;
         }
       });
     });
 
-    return text.trim() || "ขอเวลาหาข้อมูลแป๊บนะ เดี๋ยวสรุปให้ใหม่";
+    const finalText = outputText.trim() || "Desk evaluating data...";
+
+    userMemory[userId].push({
+      role: "assistant",
+      content: finalText
+    });
+
+    return finalText;
 
   } catch (err) {
     console.error("OpenAI Error:", err.response?.data || err.message);
-    return forceJSON ? [] : "ช่วงนี้ข้อมูลอาจหน่วงนิดนึง ลองใหม่อีกครั้งนะ";
+    return "Institutional Desk system error.";
   }
 }
 
 /* =====================================================
-   FINNHUB STOCK
+   MARKET DATA
 ===================================================== */
-async function getQuote(symbol) {
+async function getStock(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
     const res = await axios.get(url);
@@ -123,10 +125,7 @@ async function getQuote(symbol) {
   }
 }
 
-/* =====================================================
-   FINNHUB CRYPTO
-===================================================== */
-async function getCryptoQuote(symbol) {
+async function getCrypto(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/crypto/quote?symbol=BINANCE:${symbol}&token=${FINNHUB_API_KEY}`;
     const res = await axios.get(url);
@@ -136,45 +135,47 @@ async function getCryptoQuote(symbol) {
   }
 }
 
-/* =====================================================
-   ECONOMIC CALENDAR (AI + WEB SEARCH จริง)
-===================================================== */
-async function getEconomicCalendar() {
-
-  const prompt = `
-ค้นหาปฏิทินเศรษฐกิจสำคัญทั่วโลก 7 วันข้างหน้า
-
-ดึงเฉพาะเหตุการณ์ที่มีผลต่อตลาดการเงิน
-impact ต้องเป็น High / Medium / Low เท่านั้น
-
-ตอบเป็น JSON array เท่านั้น
-`;
-
-  return await askAI(prompt, true, true);
+async function getGold() {
+  try {
+    const url = `https://finnhub.io/api/v1/quote?symbol=OANDA:XAU_USD&token=${FINNHUB_API_KEY}`;
+    const res = await axios.get(url);
+    return res.data;
+  } catch {
+    return null;
+  }
 }
 
 /* =====================================================
-   GROUP BY IMPACT
+   RISK REWARD CALCULATOR
 ===================================================== */
-function groupByImpact(events) {
-  return {
-    High: events.filter(e => e.impact === "High"),
-    Medium: events.filter(e => e.impact === "Medium"),
-    Low: events.filter(e => e.impact === "Low")
-  };
+function calculateRR(entry, stop, target) {
+  const risk = Math.abs(entry - stop);
+  const reward = Math.abs(target - entry);
+  const rr = reward / risk;
+  return rr.toFixed(2);
 }
 
 /* =====================================================
-   FLEX PRICE
+   POSITION SIZE CALCULATOR
 ===================================================== */
-function buildPriceFlex(symbol, q) {
-  const change = q.d || 0;
-  const pct = q.dp || 0;
+function calculatePositionSize(accountSize, riskPercent, entry, stop) {
+  const riskAmount = accountSize * (riskPercent / 100);
+  const riskPerUnit = Math.abs(entry - stop);
+  const positionSize = riskAmount / riskPerUnit;
+  return positionSize.toFixed(2);
+}
+
+/* =====================================================
+   FLEX BUILDER
+===================================================== */
+function buildFlex(symbol, priceData) {
+  const change = priceData.d || 0;
+  const pct = priceData.dp || 0;
   const up = change >= 0;
 
   return {
     type: "flex",
-    altText: `${symbol} ${q.c}`,
+    altText: `${symbol} ${priceData.c}`,
     contents: {
       type: "bubble",
       body: {
@@ -184,7 +185,7 @@ function buildPriceFlex(symbol, q) {
           { type: "text", text: symbol, weight: "bold", size: "xl" },
           {
             type: "text",
-            text: `${q.c}`,
+            text: `${priceData.c}`,
             size: "xxl",
             weight: "bold",
             color: up ? "#16A34A" : "#DC2626"
@@ -196,46 +197,6 @@ function buildPriceFlex(symbol, q) {
           }
         ]
       }
-    }
-  };
-}
-
-/* =====================================================
-   FLEX CALENDAR
-===================================================== */
-function buildCalendarFlex(events) {
-
-  const grouped = groupByImpact(events);
-
-  function bubble(title, events, color) {
-    return {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: title, weight: "bold", size: "lg", color },
-          ...events.slice(0,5).map(e => ({
-            type: "text",
-            text: `${e.date} ${e.country} - ${e.event}`,
-            size: "xs",
-            wrap: true
-          }))
-        ]
-      }
-    };
-  }
-
-  return {
-    type: "flex",
-    altText: "Economic Calendar",
-    contents: {
-      type: "carousel",
-      contents: [
-        bubble("🔥 High Impact", grouped.High, "#DC2626"),
-        bubble("⚡ Medium Impact", grouped.Medium, "#F59E0B"),
-        bubble("🟢 Low Impact", grouped.Low, "#16A34A")
-      ]
     }
   };
 }
@@ -257,62 +218,112 @@ async function reply(replyToken, messages) {
 }
 
 /* =====================================================
+   SEARCH DETECTOR
+===================================================== */
+function shouldUseSearch(text) {
+  const keywords = [
+    "ข่าว",
+    "ล่าสุด",
+    "ตอนนี้",
+    "ปฏิทิน",
+    "cpi",
+    "fed",
+    "ดอกเบี้ย",
+    "ทอง"
+  ];
+  return keywords.some(k => text.toLowerCase().includes(k));
+}
+
+/* =====================================================
    WEBHOOK
 ===================================================== */
 app.post("/webhook", async (req, res) => {
 
   const event = req.body.events?.[0];
-  if (!event || event.type !== "message") return res.sendStatus(200);
-
-  const raw = event.message.text.trim();
-  const text = raw.toUpperCase();
-
-  console.log("USER:", raw);
-
-  /* ================= ECONOMIC CALENDAR ================= */
-  if (raw.includes("ปฏิทิน") || raw.includes("ข่าว")) {
-
-    const events = await getEconomicCalendar();
-
-    if (!events.length) {
-      await reply(event.replyToken, [
-        { type: "text", text: "ตอนนี้ยังดึงปฏิทินไม่ได้ เดี๋ยวลองใหม่ให้นะ" }
-      ]);
-      return res.sendStatus(200);
-    }
-
-    await reply(event.replyToken, [buildCalendarFlex(events)]);
+  if (!event || event.type !== "message") {
     return res.sendStatus(200);
   }
 
-  /* ================= CRYPTO ================= */
+  const raw = event.message.text.trim();
+  const text = raw.toUpperCase();
+  const userId = event.source.userId;
+
+  console.log("USER:", raw);
+
+  /* ===== GOLD ===== */
+  if (text.includes("XAU") || text.includes("ทอง")) {
+    const gold = await getGold();
+    if (gold?.c) {
+      await reply(event.replyToken, [buildFlex("XAUUSD", gold)]);
+      return res.sendStatus(200);
+    }
+  }
+
+  /* ===== CRYPTO ===== */
   if (/^[A-Z]{3,10}USDT$/.test(text)) {
-    const q = await getCryptoQuote(text);
-    if (q?.c > 0) {
-      await reply(event.replyToken, [buildPriceFlex(text, q)]);
+    const crypto = await getCrypto(text);
+    if (crypto?.c) {
+      await reply(event.replyToken, [buildFlex(text, crypto)]);
       return res.sendStatus(200);
     }
   }
 
-  /* ================= STOCK ================= */
+  /* ===== STOCK ===== */
   if (/^[A-Z]{1,6}$/.test(text)) {
-    const q = await getQuote(text);
-    if (q?.c > 0) {
-      await reply(event.replyToken, [buildPriceFlex(text, q)]);
+    const stock = await getStock(text);
+    if (stock?.c) {
+      await reply(event.replyToken, [buildFlex(text, stock)]);
       return res.sendStatus(200);
     }
   }
 
-  /* ================= AI GENERAL (Web Search Auto) ================= */
-  const aiText = await askAI(raw, true, false);
-  await reply(event.replyToken, [{ type: "text", text: aiText }]);
+  /* ===== RISK REWARD COMMAND ===== */
+  if (text.startsWith("RR ")) {
+    const parts = raw.split(" ");
+    const entry = parseFloat(parts[1]);
+    const stop = parseFloat(parts[2]);
+    const target = parseFloat(parts[3]);
+
+    const rr = calculateRR(entry, stop, target);
+
+    await reply(event.replyToken, [
+      { type: "text", text: `Risk/Reward Ratio = 1:${rr}` }
+    ]);
+
+    return res.sendStatus(200);
+  }
+
+  /* ===== POSITION SIZE ===== */
+  if (text.startsWith("SIZE ")) {
+    const parts = raw.split(" ");
+    const account = parseFloat(parts[1]);
+    const riskPercent = parseFloat(parts[2]);
+    const entry = parseFloat(parts[3]);
+    const stop = parseFloat(parts[4]);
+
+    const size = calculatePositionSize(account, riskPercent, entry, stop);
+
+    await reply(event.replyToken, [
+      { type: "text", text: `Position Size ≈ ${size} units` }
+    ]);
+
+    return res.sendStatus(200);
+  }
+
+  /* ===== AI ANALYSIS ===== */
+  const useSearch = shouldUseSearch(raw);
+  const aiText = await askAI(userId, raw, useSearch);
+
+  await reply(event.replyToken, [
+    { type: "text", text: aiText }
+  ]);
 
   res.sendStatus(200);
 });
 
 /* =====================================================
-   SERVER
+   START SERVER
 ===================================================== */
 app.listen(PORT, () => {
-  console.log(`🚀 SignalSeeker AI + WebSearch running on port ${PORT}`);
+  console.log("🏦 Institutional Elite Mode Running on Port " + PORT);
 });
