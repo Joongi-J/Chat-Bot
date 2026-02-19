@@ -17,66 +17,70 @@ const userMemory = {};
 const MAX_MEMORY = 12;
 
 /* =====================================================
-   CLEAN DESK SYSTEM PROMPT (NO TEMPLATE SMELL)
+   DESK SYSTEM PROMPT
 ===================================================== */
 const SYSTEM_PROMPT = `
 คุณคือ Senior Trader ใน Hedge Fund
 
-ตอบเหมือน internal desk chat
+ตอบเหมือน internal trading desk
+กระชับ มี conviction
 ไม่ใช้หัวข้อ
-ไม่ใช้วงเล็บ
-ไม่จัดโครงสร้างรายงาน
 ไม่ทำเป็นบทความ
-
-ห้ามใส่ลิงก์
-ห้ามอ้างแหล่งข่าว
-ห้ามเขียนเหมือนบทวิเคราะห์เว็บไซต์
-
-โทน:
-สุขุม กระชับ มี conviction
-ถ้าไม่ชัด ให้บอกว่ายังไม่ชัด
-ถ้าเป็นข้อมูลล่าสุด ใช้ web_search แต่ห้ามแนบลิงก์
+ไม่ใส่ลิงก์
+ถ้าไม่ชัดให้บอกว่ายังไม่ชัด
 `;
 
 /* =====================================================
-   LINK SANITIZER (กันลิงก์หลุด)
+   UTIL
 ===================================================== */
 function removeLinks(text) {
   return text.replace(/https?:\/\/\S+/g, "").trim();
 }
 
+function validatePrice(symbol, price) {
+  if (!price || typeof price !== "number") return false;
+
+  if (symbol.includes("XAU") && (price < 1000 || price > 4000))
+    return false;
+
+  if (symbol.includes("USDT") && (price < 0.0001 || price > 1000000))
+    return false;
+
+  if (price <= 0) return false;
+
+  return true;
+}
+
 /* =====================================================
    OPENAI CALL
 ===================================================== */
-async function askAI(userId, text, useSearch = false) {
+async function askAI(userId, text, marketContext = "") {
   try {
-
-    if (!userMemory[userId]) {
-      userMemory[userId] = [];
-    }
+    if (!userMemory[userId]) userMemory[userId] = [];
 
     userMemory[userId].push({ role: "user", content: text });
-
-    if (userMemory[userId].length > MAX_MEMORY) {
+    if (userMemory[userId].length > MAX_MEMORY)
       userMemory[userId].shift();
+
+    const input = [
+      { role: "system", content: SYSTEM_PROMPT },
+    ];
+
+    if (marketContext) {
+      input.push({
+        role: "system",
+        content: "Market snapshot: " + marketContext
+      });
     }
 
-    const body = {
-      model: "gpt-4.1",
-      input: [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...userMemory[userId]
-      ]
-    };
-
-    if (useSearch) {
-      body.tools = [{ type: "web_search" }];
-      body.tool_choice = "auto";
-    }
+    input.push(...userMemory[userId]);
 
     const res = await axios.post(
       "https://api.openai.com/v1/responses",
-      body,
+      {
+        model: "gpt-4.1",
+        input
+      },
       {
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -90,15 +94,12 @@ async function askAI(userId, text, useSearch = false) {
 
     for (const item of res.data.output || []) {
       for (const part of item.content || []) {
-        if (part.type === "output_text") {
+        if (part.type === "output_text")
           outputText += part.text;
-        }
       }
     }
 
-    let finalText = outputText.trim() || "Desk monitoring flows.";
-
-    finalText = removeLinks(finalText);
+    let finalText = removeLinks(outputText.trim() || "Monitoring flows.");
 
     userMemory[userId].push({
       role: "assistant",
@@ -109,13 +110,32 @@ async function askAI(userId, text, useSearch = false) {
 
   } catch (err) {
     console.error("OpenAI Error:", err.response?.data || err.message);
-    return "Desk system error. Retry.";
+    return "Desk system latency. Retry.";
   }
 }
 
 /* =====================================================
-   MARKET DATA
+   MARKET DATA LAYER
 ===================================================== */
+
+// Yahoo Gold Futures (Primary)
+async function getGoldYahoo() {
+  try {
+    const url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=GC=F";
+    const res = await axios.get(url, { timeout: 10000 });
+    const r = res.data.quoteResponse.result[0];
+
+    return {
+      c: r.regularMarketPrice,
+      d: r.regularMarketChange,
+      dp: r.regularMarketChangePercent
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Finnhub Generic
 async function getQuote(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`;
@@ -126,6 +146,7 @@ async function getQuote(symbol) {
   }
 }
 
+// Crypto
 async function getCrypto(symbol) {
   try {
     const url = `https://finnhub.io/api/v1/crypto/quote?symbol=BINANCE:${symbol}&token=${FINNHUB_API_KEY}`;
@@ -134,21 +155,6 @@ async function getCrypto(symbol) {
   } catch {
     return null;
   }
-}
-
-/* =====================================================
-   PRICE VALIDATION (กันราคาหลุดโลก)
-===================================================== */
-function validatePrice(symbol, price) {
-  if (!price) return false;
-
-  if (symbol.includes("XAU") && (price < 1000 || price > 4000))
-    return false;
-
-  if (symbol.includes("USDT") && price > 1000000)
-    return false;
-
-  return true;
 }
 
 /* =====================================================
@@ -172,7 +178,7 @@ function buildFlex(symbol, data) {
           { type: "text", text: symbol, weight: "bold", size: "xl" },
           {
             type: "text",
-            text: `${price}`,
+            text: price.toString(),
             size: "xxl",
             weight: "bold",
             color: up ? "#16A34A" : "#DC2626"
@@ -209,28 +215,9 @@ async function reply(replyToken, messages) {
 }
 
 /* =====================================================
-   SEARCH DETECTOR
-===================================================== */
-function shouldUseSearch(text) {
-  const keywords = [
-    "ข่าว",
-    "ล่าสุด",
-    "ตอนนี้",
-    "fed",
-    "cpi",
-    "ดอกเบี้ย",
-    "ปฏิทิน"
-  ];
-  return keywords.some(k =>
-    text.toLowerCase().includes(k)
-  );
-}
-
-/* =====================================================
    WEBHOOK
 ===================================================== */
 app.post("/webhook", async (req, res) => {
-
   try {
 
     const event = req.body.events?.[0];
@@ -245,19 +232,30 @@ app.post("/webhook", async (req, res) => {
 
     console.log("USER:", raw);
 
-    /* ===== GOLD ===== */
+    /* ===== GOLD ENGINE ===== */
     if (text === "XAUUSD" || text.includes("ทอง")) {
-      const gold = await getQuote("OANDA:XAU_USD");
-      if (gold?.c && validatePrice("XAUUSD", gold.c)) {
-        await reply(event.replyToken, [buildFlex("XAUUSD", gold)]);
-        return res.sendStatus(200);
+
+      let gold = await getGoldYahoo();
+
+      if (!gold || !validatePrice("XAUUSD", gold.c)) {
+        gold = await getQuote("OANDA:XAU_USD");
       }
+
+      if (gold && validatePrice("XAUUSD", gold.c)) {
+        await reply(event.replyToken, [buildFlex("XAUUSD", gold)]);
+      } else {
+        await reply(event.replyToken, [
+          { type: "text", text: "Gold feed unstable. Liquidity check ongoing." }
+        ]);
+      }
+
+      return res.sendStatus(200);
     }
 
     /* ===== CRYPTO ===== */
     if (/^[A-Z]{3,10}USDT$/.test(text)) {
       const crypto = await getCrypto(text);
-      if (crypto?.c && validatePrice(text, crypto.c)) {
+      if (crypto && validatePrice(text, crypto.c)) {
         await reply(event.replyToken, [buildFlex(text, crypto)]);
         return res.sendStatus(200);
       }
@@ -266,15 +264,21 @@ app.post("/webhook", async (req, res) => {
     /* ===== STOCK ===== */
     if (/^[A-Z]{1,6}$/.test(text)) {
       const stock = await getQuote(text);
-      if (stock?.c) {
+      if (stock && validatePrice(text, stock.c)) {
         await reply(event.replyToken, [buildFlex(text, stock)]);
         return res.sendStatus(200);
       }
     }
 
-    /* ===== AI CHAT ===== */
-    const useSearch = shouldUseSearch(raw);
-    const aiText = await askAI(userId, raw, useSearch);
+    /* ===== AI MODE WITH MARKET CONTEXT ===== */
+    let context = "";
+
+    const gold = await getGoldYahoo();
+    if (gold && validatePrice("XAUUSD", gold.c)) {
+      context += `XAUUSD ${gold.c} (${gold.dp}%) `;
+    }
+
+    const aiText = await askAI(userId, raw, context);
 
     await reply(event.replyToken, [
       { type: "text", text: aiText }
@@ -292,5 +296,5 @@ app.post("/webhook", async (req, res) => {
    START SERVER
 ===================================================== */
 app.listen(PORT, () => {
-  console.log("🏦 Institutional Clean Desk Mode Running on Port " + PORT);
+  console.log("Prime Broker Desk Running on Port " + PORT);
 });
